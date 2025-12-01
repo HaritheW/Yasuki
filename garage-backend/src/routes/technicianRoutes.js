@@ -2,21 +2,30 @@ const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
 
+const VALID_TECHNICIAN_STATUSES = ["Active", "On Leave", "Inactive"];
+
+const isValidStatus = (value) =>
+    typeof value === "string" && VALID_TECHNICIAN_STATUSES.includes(value);
+
 // Create technician
 router.post("/", (req, res) => {
-    const { name, phone } = req.body;
+    const { name, phone, status = "Active" } = req.body;
 
     if (!name) {
         return res.status(400).json({ error: "Technician name is required" });
     }
 
+    if (!isValidStatus(status)) {
+        return res.status(400).json({ error: "Invalid technician status" });
+    }
+
     const query = `
-        INSERT INTO Technicians (name, phone)
-        VALUES (?, ?)
+        INSERT INTO Technicians (name, phone, status)
+        VALUES (?, ?, ?)
     `;
-    db.run(query, [name, phone], function (err) {
+    db.run(query, [name, phone, status], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        res.status(201).json({ id: this.lastID, name, phone });
+        res.status(201).json({ id: this.lastID, name, phone, status });
     });
 });
 
@@ -42,16 +51,21 @@ router.get("/:id", (req, res) => {
 // Update technician
 router.put("/:id", (req, res) => {
     const { id } = req.params;
-    const { name, phone } = req.body;
+    const { name, phone, status } = req.body;
+
+    if (status !== undefined && !isValidStatus(status)) {
+        return res.status(400).json({ error: "Invalid technician status" });
+    }
 
     db.run(
         `
         UPDATE Technicians
         SET name = COALESCE(?, name),
-            phone = COALESCE(?, phone)
+            phone = COALESCE(?, phone),
+            status = COALESCE(?, status)
         WHERE id = ?
     `,
-        [name, phone, id],
+        [name, phone, status, id],
         function (err) {
             if (err) return res.status(500).json({ error: err.message });
             if (this.changes === 0) {

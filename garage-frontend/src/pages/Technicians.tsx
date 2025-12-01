@@ -1,48 +1,248 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Plus, Mail, Phone, Edit } from "lucide-react";
+import { Plus, Phone, Edit, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState } from "react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api";
 
-const mockTechnicians = [
-  { name: "Mike Johnson", email: "mike@garage.com", phone: "555-0101", jobs: 45, status: "Active" },
-  { name: "David Lee", email: "david@garage.com", phone: "555-0102", jobs: 38, status: "Active" },
-  { name: "Chris Martinez", email: "chris@garage.com", phone: "555-0103", jobs: 42, status: "Active" },
-  { name: "Tom Wilson", email: "tom@garage.com", phone: "555-0104", jobs: 15, status: "On Leave" },
-];
+type TechnicianStatus = "Active" | "On Leave" | "Inactive";
+
+type Technician = {
+  id: number;
+  name: string;
+  phone: string | null;
+  status: TechnicianStatus;
+};
+
+type TechnicianJob = {
+  id: number;
+  description: string | null;
+  job_status: string;
+};
+
+type UpsertTechnicianPayload = {
+  name: string;
+  phone?: string;
+  status?: TechnicianStatus;
+};
+
+const TECHNICIAN_STATUSES: TechnicianStatus[] = ["Active", "On Leave", "Inactive"];
+const STATUS_BADGE_STYLES: Record<TechnicianStatus, string> = {
+  Active: "bg-success text-success-foreground",
+  "On Leave": "bg-warning text-warning-foreground",
+  Inactive: "bg-muted text-muted-foreground",
+};
+
+const TECHNICIANS_QUERY_KEY = ["technicians"];
 
 const Technicians = () => {
-  const [open, setOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [selectedTech, setSelectedTech] = useState<typeof mockTechnicians[0] | null>(null);
+  const [selectedTech, setSelectedTech] = useState<Technician | null>(null);
+  const [createStatus, setCreateStatus] = useState<TechnicianStatus>("Active");
+  const [editStatus, setEditStatus] = useState<TechnicianStatus>("Active");
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
-  const handleDelete = () => {
-    toast({
-      title: "Technician Deleted",
-      description: `${selectedTech?.name} has been deleted successfully.`,
+  const {
+    data: techniciansData,
+    isLoading: techniciansLoading,
+    isError: techniciansError,
+    error: techniciansErrorObject,
+  } = useQuery<Technician[], Error>({
+    queryKey: TECHNICIANS_QUERY_KEY,
+    queryFn: () => apiFetch<Technician[]>("/technicians"),
+  });
+
+  const technicians = techniciansData ?? [];
+
+  const {
+    data: jobCounts,
+    isLoading: jobCountsLoading,
+  } = useQuery<Record<number, number>>({
+    queryKey: [...TECHNICIANS_QUERY_KEY, "job-counts", technicians.map((tech) => tech.id)],
+    queryFn: async () => {
+      const results = await Promise.all(
+        technicians.map(async (tech) => {
+          const jobs = await apiFetch<TechnicianJob[]>(`/technicians/${tech.id}/jobs`);
+          return [tech.id, jobs.length] as const;
+        })
+      );
+      return Object.fromEntries(results);
+    },
+    enabled: technicians.length > 0,
+  });
+
+  const derivedTechnicians = useMemo(() => technicians, [technicians]);
+
+  useEffect(() => {
+    if (selectedTech) {
+      setEditStatus(selectedTech.status);
+    }
+  }, [selectedTech]);
+
+  const createTechnicianMutation = useMutation<Technician, Error, UpsertTechnicianPayload>({
+    mutationFn: (payload) =>
+      apiFetch<Technician>("/technicians", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (technician) => {
+      queryClient.invalidateQueries({ queryKey: TECHNICIANS_QUERY_KEY });
+      toast({
+        title: "Technician added",
+        description: `${technician.name} has been added to the team.`,
+      });
+      setCreateStatus("Active");
+      setAddOpen(false);
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to add technician",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const updateTechnicianMutation = useMutation<
+    Technician,
+    Error,
+    { id: number; payload: UpsertTechnicianPayload }
+  >({
+    mutationFn: ({ id, payload }) =>
+      apiFetch<Technician>(`/technicians/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (technician) => {
+      queryClient.invalidateQueries({ queryKey: TECHNICIANS_QUERY_KEY });
+      toast({
+        title: "Technician updated",
+        description: `${technician.name} has been updated successfully.`,
+      });
+      setSelectedTech(technician);
+      setEditOpen(false);
+      setDetailOpen(true);
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to update technician",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteTechnicianMutation = useMutation<void, Error, number>({
+    mutationFn: (id) =>
+      apiFetch(`/technicians/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: TECHNICIANS_QUERY_KEY });
+      toast({
+        title: "Technician deleted",
+        description: `Technician #${id} has been removed.`,
+      });
+      setDeleteOpen(false);
+      setDetailOpen(false);
+      setSelectedTech(null);
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to delete technician",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleCreateTechnician = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+
+    const name = String(formData.get("name") || "").trim();
+    const phone = String(formData.get("phone") || "").trim();
+
+    if (!name) {
+      toast({
+        title: "Technician name is required",
+        description: "Please provide a name before adding the technician.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const payload: UpsertTechnicianPayload = {
+      name,
+      phone: phone || undefined,
+      status: createStatus,
+    };
+
+    createTechnicianMutation.mutate(payload, {
+      onSuccess: () => {
+        form.reset();
+      },
     });
-    setDeleteOpen(false);
-    setDetailOpen(false);
   };
 
-  const handleEdit = (e: React.FormEvent) => {
-    e.preventDefault();
-    toast({
-      title: "Technician Updated",
-      description: `${selectedTech?.name} has been updated successfully.`,
-    });
-    setEditOpen(false);
-    setDetailOpen(false);
+  const handleUpdateTechnician = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedTech) return;
+
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+
+    const payload: UpsertTechnicianPayload = {
+      name: String(formData.get("name") || "").trim(),
+      phone: String(formData.get("phone") || "").trim() || undefined,
+      status: editStatus,
+    };
+
+    if (!payload.name) {
+      toast({
+        title: "Technician name is required",
+        description: "Please provide a name before saving changes.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    updateTechnicianMutation.mutate(
+      { id: selectedTech.id, payload },
+      {
+        onSuccess: () => {
+          form.reset();
+        },
+      }
+    );
   };
+
+  const jobsForTechnician = (id: number) => jobCounts?.[id] ?? 0;
 
   return (
     <div className="space-y-6">
@@ -51,7 +251,15 @@ const Technicians = () => {
           <h1 className="text-3xl font-bold text-foreground">Technicians</h1>
           <p className="text-muted-foreground">Manage your garage technicians</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog
+          open={addOpen}
+          onOpenChange={(open) => {
+            setAddOpen(open);
+            if (!open) {
+              setCreateStatus("Active");
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button className="bg-primary hover:bg-primary/90">
               <Plus className="mr-2 h-4 w-4" />
@@ -63,41 +271,46 @@ const Technicians = () => {
               <DialogTitle>Add New Technician</DialogTitle>
               <DialogDescription>Add a new technician to your garage team</DialogDescription>
             </DialogHeader>
-            <form className="space-y-4">
+            <form onSubmit={handleCreateTechnician} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="name">Full Name</Label>
-                <Input id="name" placeholder="John Doe" required />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="email">Email Address</Label>
-                <Input id="email" type="email" placeholder="john@garage.com" required />
+                <Input id="name" name="name" placeholder="John Doe" required />
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="phone">Phone Number</Label>
-                <Input id="phone" type="tel" placeholder="555-0101" required />
+                <Input id="phone" name="phone" type="tel" placeholder="555-0101" />
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="status">Status</Label>
-                <Select defaultValue="active">
+                <Select
+                  value={createStatus}
+                  onValueChange={(value) => setCreateStatus(value as TechnicianStatus)}
+                >
                   <SelectTrigger id="status">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="leave">On Leave</SelectItem>
+                    {TECHNICIAN_STATUSES.map((status) => (
+                      <SelectItem key={status} value={status}>
+                        {status}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="flex justify-end gap-3 pt-4">
-                <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-primary">
-                  Add Technician
+                <Button
+                  type="submit"
+                  className="bg-primary"
+                  disabled={createTechnicianMutation.isPending}
+                >
+                  {createTechnicianMutation.isPending ? "Adding..." : "Add Technician"}
                 </Button>
               </div>
             </form>
@@ -105,57 +318,95 @@ const Technicians = () => {
         </Dialog>
       </div>
 
+      {techniciansLoading && (
+        <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+          Loading technicians...
+        </div>
+      )}
+
+      {techniciansError && !techniciansLoading && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/5 p-6 text-center text-sm text-destructive">
+          {techniciansErrorObject?.message ?? "Failed to load technicians."}
+        </div>
+      )}
+
+      {!techniciansLoading && !techniciansError && derivedTechnicians.length === 0 && (
+        <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+          No technicians found. Start by adding one.
+        </div>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {mockTechnicians.map((tech, index) => (
-          <Card 
-            key={index} 
-            className="cursor-pointer hover:shadow-lg transition-shadow"
-            onClick={() => {
-              setSelectedTech(tech);
-              setDetailOpen(true);
-            }}
-          >
-            <CardHeader className="pb-3">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-12 w-12">
-                    <AvatarFallback className="bg-primary text-primary-foreground">
-                      {tech.name.split(' ').map(n => n[0]).join('')}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <h3 className="font-semibold">{tech.name}</h3>
-                    <Badge className={tech.status === "Active" ? "bg-success text-success-foreground" : "bg-muted text-muted-foreground"}>
-                      {tech.status}
-                    </Badge>
+        {derivedTechnicians.map((tech) => {
+          const jobsCount = jobsForTechnician(tech.id);
+          const statusLabel = tech.status;
+          const statusClass =
+            STATUS_BADGE_STYLES[statusLabel] ?? "bg-muted text-muted-foreground";
+
+          return (
+            <Card
+              key={tech.id}
+              className="cursor-pointer hover:shadow-lg transition-shadow"
+              onClick={() => {
+                setSelectedTech(tech);
+                setDetailOpen(true);
+              }}
+            >
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-12 w-12">
+                      <AvatarFallback className="bg-primary text-primary-foreground">
+                        {tech.name
+                          .split(" ")
+                          .map((chunk) => chunk[0])
+                          .join("")
+                          .slice(0, 2)
+                          .toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <h3 className="font-semibold">{tech.name}</h3>
+                      <Badge className={statusClass}>
+                        {statusLabel}
+                      </Badge>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Mail className="h-4 w-4" />
-                {tech.email}
-              </div>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Phone className="h-4 w-4" />
-                {tech.phone}
-              </div>
-              <div className="pt-2 border-t">
-                <p className="text-sm text-muted-foreground">Completed Jobs</p>
-                <p className="text-2xl font-bold text-foreground">{tech.jobs}</p>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Phone className="h-4 w-4" />
+                  {tech.phone || "Not provided"}
+                </div>
+                <div className="pt-2 border-t">
+                  <p className="text-sm text-muted-foreground">Assigned Jobs</p>
+                  <p className="text-2xl font-bold text-foreground">
+                    {jobCountsLoading ? "…" : jobsCount}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
       {/* Technician Detail Modal */}
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+      <Dialog
+        open={detailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open && !editOpen && !deleteOpen) {
+            setSelectedTech(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Technician Details</DialogTitle>
-            <DialogDescription>Complete information for {selectedTech?.name}</DialogDescription>
+            <DialogDescription>
+              Complete information for {selectedTech?.name ?? "technician"}
+            </DialogDescription>
           </DialogHeader>
           {selectedTech && (
             <div className="space-y-4">
@@ -167,28 +418,31 @@ const Technicians = () => {
                 <div>
                   <Label className="text-muted-foreground">Status</Label>
                   <div className="mt-1">
-                    <Badge className={selectedTech.status === "Active" ? "bg-success text-success-foreground" : "bg-muted text-muted-foreground"}>
+                    <Badge
+                      className={
+                        STATUS_BADGE_STYLES[selectedTech.status] ??
+                        "bg-muted text-muted-foreground"
+                      }
+                    >
                       {selectedTech.status}
                     </Badge>
                   </div>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Email</Label>
-                  <p className="font-semibold">{selectedTech.email}</p>
-                </div>
-                <div>
                   <Label className="text-muted-foreground">Phone</Label>
-                  <p className="font-semibold">{selectedTech.phone}</p>
+                  <p className="font-semibold">{selectedTech.phone || "Not provided"}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Completed Jobs</Label>
-                  <p className="font-semibold text-2xl">{selectedTech.jobs}</p>
+                  <Label className="text-muted-foreground">Assigned Jobs</Label>
+                  <p className="font-semibold text-2xl">
+                    {jobCountsLoading ? "…" : jobsForTechnician(selectedTech.id)}
+                  </p>
                 </div>
               </div>
 
               <div className="flex gap-3 pt-4 border-t">
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   className="flex-1"
                   onClick={() => {
                     setDetailOpen(false);
@@ -198,11 +452,15 @@ const Technicians = () => {
                   <Edit className="mr-2 h-4 w-4" />
                   Edit
                 </Button>
-                <Button 
-                  variant="destructive" 
+                <Button
+                  variant="destructive"
                   className="flex-1"
-                  onClick={() => setDeleteOpen(true)}
+                  onClick={() => {
+                    setDetailOpen(false);
+                    setDeleteOpen(true);
+                  }}
                 >
+                  <Trash2 className="mr-2 h-4 w-4" />
                   Delete
                 </Button>
               </div>
@@ -212,35 +470,57 @@ const Technicians = () => {
       </Dialog>
 
       {/* Edit Technician Modal */}
-      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+      <Dialog
+        open={editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open);
+          if (!open && !detailOpen && !deleteOpen) {
+            setSelectedTech(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Technician</DialogTitle>
-            <DialogDescription>Update technician details for {selectedTech?.name}</DialogDescription>
+            <DialogDescription>
+              Update technician details for {selectedTech?.name ?? "technician"}
+            </DialogDescription>
           </DialogHeader>
           {selectedTech && (
-            <form onSubmit={handleEdit} className="space-y-4">
+            <form onSubmit={handleUpdateTechnician} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="editName">Full Name</Label>
-                <Input id="editName" defaultValue={selectedTech.name} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="editEmail">Email Address</Label>
-                <Input id="editEmail" type="email" defaultValue={selectedTech.email} />
+                <Input
+                  id="editName"
+                  name="name"
+                  defaultValue={selectedTech.name}
+                  required
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="editPhone">Phone Number</Label>
-                <Input id="editPhone" type="tel" defaultValue={selectedTech.phone} />
+                <Input
+                  id="editPhone"
+                  name="phone"
+                  type="tel"
+                  defaultValue={selectedTech.phone ?? ""}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="editStatus">Status</Label>
-                <Select defaultValue={selectedTech.status}>
+                <Select
+                  value={editStatus}
+                  onValueChange={(value) => setEditStatus(value as TechnicianStatus)}
+                >
                   <SelectTrigger id="editStatus">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="Active">Active</SelectItem>
-                    <SelectItem value="On Leave">On Leave</SelectItem>
+                    {TECHNICIAN_STATUSES.map((status) => (
+                      <SelectItem key={status} value={status}>
+                        {status}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -248,8 +528,12 @@ const Technicians = () => {
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-primary">
-                  Save Changes
+                <Button
+                  type="submit"
+                  className="bg-primary"
+                  disabled={updateTechnicianMutation.isPending}
+                >
+                  {updateTechnicianMutation.isPending ? "Saving..." : "Save Changes"}
                 </Button>
               </div>
             </form>
@@ -258,20 +542,36 @@ const Technicians = () => {
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <Dialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          setDeleteOpen(open);
+          if (!open && !detailOpen && !editOpen) {
+            setSelectedTech(null);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Confirm Deletion</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete {selectedTech?.name}? This action cannot be undone.
+              Are you sure you want to delete {selectedTech?.name ?? "this technician"}? This
+              action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              Delete
+            <Button
+              variant="destructive"
+              disabled={deleteTechnicianMutation.isPending}
+              onClick={() => {
+                if (!selectedTech) return;
+                deleteTechnicianMutation.mutate(selectedTech.id);
+              }}
+            >
+              {deleteTechnicianMutation.isPending ? "Deleting..." : "Delete"}
             </Button>
           </div>
         </DialogContent>

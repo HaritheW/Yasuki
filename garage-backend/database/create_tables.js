@@ -56,10 +56,36 @@ db.serialize(() => {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             phone TEXT,
+            status TEXT CHECK(status IN ('Active', 'On Leave', 'Inactive')) DEFAULT 'Active',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `,
         logTableResult("Technicians")
+    );
+
+    db.run(
+        `
+        ALTER TABLE Technicians
+        ADD COLUMN status TEXT CHECK(status IN ('Active', 'On Leave', 'Inactive')) DEFAULT 'Active';
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Technicians add status column error:", err.message);
+            }
+        }
+    );
+
+    db.run(
+        `
+        UPDATE Technicians
+        SET status = 'Active'
+        WHERE status IS NULL;
+    `,
+        (err) => {
+            if (err) {
+                console.error("Technicians status backfill error:", err.message);
+            }
+        }
     );
 
     // ----------------------------------
