@@ -20,10 +20,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useMemo, useState } from "react";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+
+type PaymentStatus = "pending" | "paid" | "unpaid";
 
 type Expense = {
   id: number;
@@ -31,6 +34,9 @@ type Expense = {
   category: string | null;
   amount: number;
   expense_date: string;
+  payment_status: PaymentStatus;
+  payment_method: string | null;
+  remarks: string | null;
 };
 
 type ExpenseFormPayload = {
@@ -38,9 +44,20 @@ type ExpenseFormPayload = {
   category?: string;
   amount: number;
   expense_date?: string;
+  payment_status?: PaymentStatus;
+  payment_method?: string | null;
+  remarks?: string;
 };
 
 const EXPENSES_QUERY_KEY = ["expenses"];
+const NO_CATEGORY_VALUE = "__none__";
+const PAYMENT_METHOD_OPTIONS = ["Cash", "Card", "Bank Transfer", "Online"] as const;
+const STATUS_STYLES: Record<PaymentStatus, string> = {
+  paid: "bg-success text-success-foreground",
+  pending: "bg-warning text-warning-foreground",
+  unpaid: "bg-muted text-muted-foreground",
+};
+const OTHER_METHOD_VALUE = "__other__";
 
 const Expenses = () => {
   const [addOpen, setAddOpen] = useState(false);
@@ -48,6 +65,14 @@ const Expenses = () => {
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
+  const [createCategory, setCreateCategory] = useState<string>(NO_CATEGORY_VALUE);
+  const [createStatus, setCreateStatus] = useState<PaymentStatus>("pending");
+  const [createMethod, setCreateMethod] = useState<string>("");
+  const [createMethodCustom, setCreateMethodCustom] = useState<string>("");
+  const [editStatus, setEditStatus] = useState<PaymentStatus>("pending");
+  const [editMethod, setEditMethod] = useState<string>("");
+  const [editMethodCustom, setEditMethodCustom] = useState<string>("");
+  const [editCategory, setEditCategory] = useState<string>(NO_CATEGORY_VALUE);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -90,6 +115,55 @@ const Expenses = () => {
     return { dailyTotal, monthlyTotal };
   }, [expenses]);
 
+  useEffect(() => {
+    if (selectedExpense) {
+      setEditCategory(selectedExpense.category ?? NO_CATEGORY_VALUE);
+      setEditStatus(selectedExpense.payment_status);
+      const method = selectedExpense.payment_method || "";
+      if (method) {
+        if ((PAYMENT_METHOD_OPTIONS as readonly string[]).includes(method)) {
+          setEditMethod(method);
+          setEditMethodCustom("");
+        } else {
+          setEditMethod(OTHER_METHOD_VALUE);
+          setEditMethodCustom(method);
+        }
+      } else {
+        setEditMethod("");
+        setEditMethodCustom("");
+      }
+    } else {
+      setEditCategory(NO_CATEGORY_VALUE);
+      setEditStatus("pending");
+      setEditMethod("");
+      setEditMethodCustom("");
+    }
+  }, [selectedExpense]);
+
+  useEffect(() => {
+    if (createStatus === "paid") {
+      if (!createMethod) {
+        setCreateMethod(PAYMENT_METHOD_OPTIONS[0]);
+        setCreateMethodCustom("");
+      }
+    } else {
+      setCreateMethod("");
+      setCreateMethodCustom("");
+    }
+  }, [createStatus, createMethod]);
+
+  useEffect(() => {
+    if (editStatus === "paid") {
+      if (!editMethod && !editMethodCustom) {
+        setEditMethod(PAYMENT_METHOD_OPTIONS[0]);
+        setEditMethodCustom("");
+      }
+    } else {
+      setEditMethod("");
+      setEditMethodCustom("");
+    }
+  }, [editStatus, editMethod, editMethodCustom]);
+
   const createExpenseMutation = useMutation<Expense, Error, ExpenseFormPayload>({
     mutationFn: (payload) =>
       apiFetch<Expense>("/expenses", {
@@ -102,6 +176,10 @@ const Expenses = () => {
         title: "Expense added",
         description: `${expense.description} recorded successfully.`,
       });
+      setCreateStatus("pending");
+      setCreateMethod("");
+      setCreateMethodCustom("");
+      setCreateCategory(NO_CATEGORY_VALUE);
       setAddOpen(false);
     },
     onError: (error) => {
@@ -130,6 +208,21 @@ const Expenses = () => {
         description: `${expense.description} updated successfully.`,
       });
       setSelectedExpense(expense);
+      setEditCategory(expense.category ?? NO_CATEGORY_VALUE);
+      setEditStatus(expense.payment_status);
+      const method = expense.payment_method || "";
+      if (method) {
+        if ((PAYMENT_METHOD_OPTIONS as readonly string[]).includes(method)) {
+          setEditMethod(method);
+          setEditMethodCustom("");
+        } else {
+          setEditMethod(OTHER_METHOD_VALUE);
+          setEditMethodCustom(method);
+        }
+      } else {
+        setEditMethod("");
+        setEditMethodCustom("");
+      }
       setEditOpen(false);
       setDetailOpen(true);
     },
@@ -173,8 +266,10 @@ const Expenses = () => {
 
     const description = String(formData.get("description") || "").trim();
     const amount = Number(formData.get("amount") || 0);
-    const category = String(formData.get("category") || "").trim();
     const expense_date = String(formData.get("expense_date") || "").trim();
+    const remarks = String(formData.get("remarks") || "").trim();
+    const categoryValue =
+      createCategory === NO_CATEGORY_VALUE ? "" : createCategory.trim();
 
     if (!description) {
       toast({
@@ -194,16 +289,39 @@ const Expenses = () => {
       return;
     }
 
+    const methodValue =
+      createStatus === "paid"
+        ? (createMethod === OTHER_METHOD_VALUE
+            ? createMethodCustom.trim()
+            : createMethod.trim())
+        : "";
+
+    if (createStatus === "paid" && !methodValue) {
+      toast({
+        title: "Payment method required",
+        description: "Choose how the expense was paid.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const payload: ExpenseFormPayload = {
       description,
       amount,
-      category: category || undefined,
+      category: categoryValue || undefined,
       expense_date: expense_date || undefined,
+      payment_status: createStatus,
+      payment_method: createStatus === "paid" ? methodValue : null,
+      remarks: remarks || undefined,
     };
 
     createExpenseMutation.mutate(payload, {
       onSuccess: () => {
         form.reset();
+        setCreateStatus("pending");
+        setCreateMethod("");
+        setCreateMethodCustom("");
+        setCreateCategory(NO_CATEGORY_VALUE);
       },
     });
   };
@@ -217,8 +335,10 @@ const Expenses = () => {
 
     const description = String(formData.get("description") || "").trim();
     const amount = Number(formData.get("amount") || 0);
-    const category = String(formData.get("category") || "").trim();
     const expense_date = String(formData.get("expense_date") || "").trim();
+    const remarks = String(formData.get("remarks") || "").trim();
+    const categoryValue =
+      editCategory === NO_CATEGORY_VALUE ? "" : editCategory.trim();
 
     if (!description) {
       toast({
@@ -238,11 +358,30 @@ const Expenses = () => {
       return;
     }
 
+    const methodValue =
+      editStatus === "paid"
+        ? (editMethod === OTHER_METHOD_VALUE
+            ? editMethodCustom.trim()
+            : editMethod.trim())
+        : "";
+
+    if (editStatus === "paid" && !methodValue) {
+      toast({
+        title: "Payment method required",
+        description: "Choose how the expense was paid.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const payload: ExpenseFormPayload = {
       description,
       amount,
-      category: category || undefined,
+      category: categoryValue || undefined,
       expense_date: expense_date || undefined,
+      payment_status: editStatus,
+      payment_method: editStatus === "paid" ? methodValue : null,
+      remarks: remarks || undefined,
     };
 
     updateExpenseMutation.mutate(
@@ -263,6 +402,9 @@ const Expenses = () => {
     return new Date(value).toLocaleDateString();
   };
 
+  const statusLabel = (status: PaymentStatus) =>
+    status.charAt(0).toUpperCase() + status.slice(1);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -270,14 +412,25 @@ const Expenses = () => {
           <h1 className="text-3xl font-bold text-foreground">Expenses</h1>
           <p className="text-muted-foreground">Track and manage business expenses</p>
         </div>
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <Dialog
+          open={addOpen}
+          onOpenChange={(open) => {
+            setAddOpen(open);
+            if (!open) {
+              setCreateStatus("pending");
+              setCreateMethod("");
+              setCreateMethodCustom("");
+              setCreateCategory(NO_CATEGORY_VALUE);
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button className="bg-primary hover:bg-primary/90">
               <Plus className="mr-2 h-4 w-4" />
               Add Expense
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Add New Expense</DialogTitle>
               <DialogDescription>Record a new business expense</DialogDescription>
@@ -290,11 +443,12 @@ const Expenses = () => {
 
               <div className="space-y-2">
                 <Label htmlFor="category">Category</Label>
-                <Select name="category">
+                <Select value={createCategory} onValueChange={setCreateCategory}>
                   <SelectTrigger id="category">
                     <SelectValue placeholder="Select category" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={NO_CATEGORY_VALUE}>No category</SelectItem>
                     <SelectItem value="Utilities">Utilities</SelectItem>
                     <SelectItem value="Supplies">Supplies</SelectItem>
                     <SelectItem value="Maintenance">Maintenance</SelectItem>
@@ -326,6 +480,69 @@ const Expenses = () => {
                   step="0.01"
                   placeholder="0.00"
                   required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Payment Status</Label>
+                <RadioGroup
+                  value={createStatus}
+                  onValueChange={(value) => setCreateStatus(value as PaymentStatus)}
+                  className="flex flex-wrap gap-4"
+                >
+                  {(["pending", "paid", "unpaid"] as PaymentStatus[]).map((status) => (
+                    <div key={status} className="flex items-center space-x-2">
+                      <RadioGroupItem value={status} id={`create-status-${status}`} />
+                      <Label htmlFor={`create-status-${status}`}>
+                        {status.charAt(0).toUpperCase() + status.slice(1)}
+                      </Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              </div>
+
+              {createStatus === "paid" && (
+                <div className="space-y-2">
+                  <Label>Payment Method</Label>
+                  <RadioGroup
+                    value={createMethod}
+                    onValueChange={(value) => {
+                      setCreateMethod(value);
+                      if (value !== OTHER_METHOD_VALUE) {
+                        setCreateMethodCustom("");
+                      }
+                    }}
+                    className="flex flex-wrap gap-4"
+                  >
+                    {PAYMENT_METHOD_OPTIONS.map((option) => (
+                      <div key={option} className="flex items-center space-x-2">
+                        <RadioGroupItem value={option} id={`create-method-${option}`} />
+                        <Label htmlFor={`create-method-${option}`}>{option}</Label>
+                      </div>
+                    ))}
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value={OTHER_METHOD_VALUE} id="create-method-other" />
+                      <Label htmlFor="create-method-other">Other</Label>
+                    </div>
+                  </RadioGroup>
+                  {createMethod === OTHER_METHOD_VALUE && (
+                    <Input
+                      id="createMethodCustom"
+                      placeholder="Enter payment method"
+                      value={createMethodCustom}
+                      onChange={(event) => setCreateMethodCustom(event.target.value)}
+                    />
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="remarks">Remarks</Label>
+                <Textarea
+                  id="remarks"
+                  name="remarks"
+                  placeholder="Optional notes..."
+                  rows={2}
                 />
               </div>
 
@@ -404,7 +621,9 @@ const Expenses = () => {
                   <th className="p-3 text-left text-sm font-medium">Date</th>
                   <th className="p-3 text-left text-sm font-medium">Category</th>
                   <th className="p-3 text-left text-sm font-medium">Description</th>
-                  <th className="p-3 text-left text-sm font-medium">Amount</th>
+                  <th className="p-3 w-48 text-left text-sm font-medium">Remarks</th>
+                  <th className="p-3 pr-8 text-right text-sm font-medium">Amount</th>
+                  <th className="p-3 pl-4 text-left text-sm font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -419,12 +638,36 @@ const Expenses = () => {
                       setDetailOpen(true);
                     }}
                   >
-                    <td className="p-3 text-muted-foreground">{formatDate(expense.expense_date)}</td>
-                    <td className="p-3">
+                    <td className="p-3 text-muted-foreground whitespace-nowrap">
+                      {formatDate(expense.expense_date)}
+                    </td>
+                    <td className="p-3 whitespace-nowrap">
                       {expense.category ? <Badge variant="outline">{expense.category}</Badge> : "—"}
                     </td>
-                    <td className="p-3">{expense.description}</td>
-                    <td className="p-3 font-semibold">{currency(expense.amount)}</td>
+                    <td className="p-3">
+                      <span
+                        className="block max-w-[320px] truncate text-sm"
+                        title={expense.description}
+                      >
+                        {expense.description}
+                      </span>
+                    </td>
+                    <td className="p-3 w-48">
+                      <span
+                        className="block truncate text-sm text-muted-foreground"
+                        title={expense.remarks || "N/A"}
+                      >
+                        {expense.remarks || "N/A"}
+                      </span>
+                    </td>
+                    <td className="p-3 pr-8 font-semibold text-right whitespace-nowrap">
+                      {currency(expense.amount)}
+                    </td>
+                    <td className="p-3 pl-4">
+                      <Badge className={STATUS_STYLES[expense.payment_status]}>
+                        {statusLabel(expense.payment_status)}
+                      </Badge>
+                    </td>
                   </tr>
                   ))}
               </tbody>
@@ -463,9 +706,25 @@ const Expenses = () => {
                   <Label className="text-muted-foreground">Amount</Label>
                   <p className="font-semibold text-lg">{currency(selectedExpense.amount)}</p>
                 </div>
+                <div>
+                  <Label className="text-muted-foreground">Payment Status</Label>
+                  <div className="mt-1">
+                    <Badge className={STATUS_STYLES[selectedExpense.payment_status]}>
+                      {statusLabel(selectedExpense.payment_status)}
+                    </Badge>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-muted-foreground">Payment Method</Label>
+                  <p className="font-semibold">{selectedExpense.payment_method || "—"}</p>
+                </div>
                 <div className="col-span-2">
                   <Label className="text-muted-foreground">Description</Label>
                   <p className="font-semibold">{selectedExpense.description}</p>
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-muted-foreground">Remarks</Label>
+                  <p className="font-semibold">{selectedExpense.remarks || "—"}</p>
                 </div>
               </div>
 
@@ -526,14 +785,12 @@ const Expenses = () => {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="editCategory">Category</Label>
-                <Select
-                  name="category"
-                  defaultValue={selectedExpense.category || undefined}
-                >
+                <Select value={editCategory} onValueChange={setEditCategory}>
                   <SelectTrigger id="editCategory">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={NO_CATEGORY_VALUE}>No category</SelectItem>
                     <SelectItem value="Utilities">Utilities</SelectItem>
                     <SelectItem value="Supplies">Supplies</SelectItem>
                     <SelectItem value="Maintenance">Maintenance</SelectItem>
@@ -561,6 +818,66 @@ const Expenses = () => {
                   type="number"
                   step="0.01"
                   defaultValue={selectedExpense.amount}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Payment Status</Label>
+                <RadioGroup
+                  value={editStatus}
+                  onValueChange={(value) => setEditStatus(value as PaymentStatus)}
+                  className="flex flex-wrap gap-4"
+                >
+                  {(["pending", "paid", "unpaid"] as PaymentStatus[]).map((status) => (
+                    <div key={status} className="flex items-center space-x-2">
+                      <RadioGroupItem value={status} id={`edit-status-${status}`} />
+                      <Label htmlFor={`edit-status-${status}`}>
+                        {status.charAt(0).toUpperCase() + status.slice(1)}
+                      </Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              </div>
+              {editStatus === "paid" && (
+                <div className="space-y-2">
+                  <Label>Payment Method</Label>
+                  <RadioGroup
+                    value={editMethod}
+                    onValueChange={(value) => {
+                      setEditMethod(value);
+                      if (value !== OTHER_METHOD_VALUE) {
+                        setEditMethodCustom("");
+                      }
+                    }}
+                    className="flex flex-wrap gap-4"
+                  >
+                    {PAYMENT_METHOD_OPTIONS.map((option) => (
+                      <div key={option} className="flex items-center space-x-2">
+                        <RadioGroupItem value={option} id={`edit-method-${option}`} />
+                        <Label htmlFor={`edit-method-${option}`}>{option}</Label>
+                      </div>
+                    ))}
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value={OTHER_METHOD_VALUE} id="edit-method-other" />
+                      <Label htmlFor="edit-method-other">Other</Label>
+                    </div>
+                  </RadioGroup>
+                  {editMethod === OTHER_METHOD_VALUE && (
+                    <Input
+                      id="editMethodCustom"
+                      placeholder="Enter payment method"
+                      value={editMethodCustom}
+                      onChange={(event) => setEditMethodCustom(event.target.value)}
+                    />
+                  )}
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="editRemarks">Remarks</Label>
+                <Textarea
+                  id="editRemarks"
+                  name="remarks"
+                  defaultValue={selectedExpense.remarks ?? ""}
+                  rows={2}
                 />
               </div>
               <div className="flex justify-end gap-3 pt-4">

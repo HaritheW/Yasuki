@@ -291,10 +291,62 @@ db.serialize(() => {
             category TEXT,
             amount REAL NOT NULL,
             expense_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            payment_status TEXT CHECK(payment_status IN ('pending', 'paid', 'unpaid')) DEFAULT 'pending',
+            payment_method TEXT,
+            remarks TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `,
         logTableResult("Expenses")
+    );
+
+    db.run(
+        `
+        ALTER TABLE Expenses
+        ADD COLUMN payment_status TEXT CHECK(payment_status IN ('pending', 'paid', 'unpaid')) DEFAULT 'pending';
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Expenses add payment_status column error:", err.message);
+            }
+        }
+    );
+
+    db.run(
+        `
+        ALTER TABLE Expenses
+        ADD COLUMN payment_method TEXT;
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Expenses add payment_method column error:", err.message);
+            }
+        }
+    );
+
+    db.run(
+        `
+        ALTER TABLE Expenses
+        ADD COLUMN remarks TEXT;
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Expenses add remarks column error:", err.message);
+            }
+        }
+    );
+
+    db.run(
+        `
+        UPDATE Expenses
+        SET payment_status = 'pending'
+        WHERE payment_status IS NULL;
+    `,
+        (err) => {
+            if (err) {
+                console.error("Expenses payment_status backfill error:", err.message);
+            }
+        }
     );
 
     // ----------------------------------
