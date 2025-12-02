@@ -215,7 +215,7 @@ const Inventory = () => {
       }),
     onSuccess: (item) => {
       queryClient.invalidateQueries({ queryKey: INVENTORY_QUERY_KEY });
-      toast({
+    toast({
         title: "Item added",
         description: `${item.name} added to inventory.`,
       });
@@ -248,7 +248,7 @@ const Inventory = () => {
       });
       setSelectedItem(item);
       setEditOpen(false);
-      setAddStockOpen(false);
+    setAddStockOpen(false);
     },
     onError: (err) => {
       toast({
@@ -796,7 +796,7 @@ const Inventory = () => {
                   filteredInventory.map((item) => {
                     const statusLabel = getStatusLabel(item);
                     return (
-                      <tr
+                  <tr 
                         key={item.id}
                     className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
                     onClick={() => handleRowClick(item)}
@@ -807,7 +807,7 @@ const Inventory = () => {
                             {typeLabels[item.type]}
                           </Badge>
                     </td>
-                        <td className="p-3">
+                    <td className="p-3">
                           <span
                             className={
                               statusLabel === "Low Stock" ? "text-warning font-semibold" : ""

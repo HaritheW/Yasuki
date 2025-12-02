@@ -69,17 +69,17 @@ router.post("/", (req, res) => {
             remarks || null,
         ],
         function (err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.status(201).json({
-                id: this.lastID,
-                description,
-                category,
-                amount: amountValue,
-                expense_date: expense_date || new Date().toISOString(),
+        if (err) return res.status(500).json({ error: err.message });
+        res.status(201).json({
+            id: this.lastID,
+            description,
+            category,
+            amount: amountValue,
+            expense_date: expense_date || new Date().toISOString(),
                 payment_status: statusValue,
                 payment_method: payment_method || null,
                 remarks: remarks || null,
-            });
+        });
         }
     );
 });
@@ -130,7 +130,7 @@ router.put("/:id", (req, res) => {
         let amountValue = existing.amount;
         if (amount !== undefined) {
             try {
-                amountValue = parseAmount(amount, "amount");
+            amountValue = parseAmount(amount, "amount");
             } catch (error) {
                 const status = Number.isInteger(error.status) ? error.status : 500;
                 return res.status(status).json({ error: error.message });
@@ -141,9 +141,9 @@ router.put("/:id", (req, res) => {
         if (payment_status !== undefined) {
             try {
                 statusValue = normalizeStatus(payment_status);
-            } catch (error) {
-                const status = Number.isInteger(error.status) ? error.status : 500;
-                return res.status(status).json({ error: error.message });
+    } catch (error) {
+        const status = Number.isInteger(error.status) ? error.status : 500;
+        return res.status(status).json({ error: error.message });
             }
         }
 
@@ -159,11 +159,11 @@ router.put("/:id", (req, res) => {
             return res
                 .status(400)
                 .json({ error: "payment_method is required when payment_status is paid" });
-        }
+    }
 
-        db.run(
-            `
-            UPDATE Expenses
+    db.run(
+        `
+        UPDATE Expenses
             SET description = ?,
                 category = ?,
                 amount = ?,
@@ -171,8 +171,8 @@ router.put("/:id", (req, res) => {
                 payment_status = ?,
                 payment_method = ?,
                 remarks = ?
-            WHERE id = ?
-        `,
+        WHERE id = ?
+    `,
             [
                 nextDescription,
                 nextCategory,
@@ -183,14 +183,14 @@ router.put("/:id", (req, res) => {
                 nextRemarks,
                 id,
             ],
-            function (err) {
-                if (err) return res.status(500).json({ error: err.message });
-                db.get("SELECT * FROM Expenses WHERE id = ?", [id], (selectErr, row) => {
-                    if (selectErr) return res.status(500).json({ error: selectErr.message });
-                    res.json(row);
-                });
-            }
-        );
+        function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            db.get("SELECT * FROM Expenses WHERE id = ?", [id], (selectErr, row) => {
+                if (selectErr) return res.status(500).json({ error: selectErr.message });
+                res.json(row);
+            });
+        }
+    );
     });
 });
 

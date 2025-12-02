@@ -242,12 +242,12 @@ const Expenses = () => {
       }),
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: EXPENSES_QUERY_KEY });
-      toast({
+    toast({
         title: "Expense deleted",
         description: `Expense #${id} has been removed.`,
-      });
-      setDeleteOpen(false);
-      setDetailOpen(false);
+    });
+    setDeleteOpen(false);
+    setDetailOpen(false);
       setSelectedExpense(null);
     },
     onError: (error) => {
@@ -366,7 +366,7 @@ const Expenses = () => {
         : "";
 
     if (editStatus === "paid" && !methodValue) {
-      toast({
+    toast({
         title: "Payment method required",
         description: "Choose how the expense was paid.",
         variant: "destructive",
@@ -669,7 +669,7 @@ const Expenses = () => {
                       </Badge>
                     </td>
                   </tr>
-                  ))}
+                ))}
               </tbody>
             </table>
           </div>

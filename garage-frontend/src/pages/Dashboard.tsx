@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +17,7 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
@@ -46,6 +47,16 @@ type Customer = {
   email: string | null;
   phone: string | null;
   address: string | null;
+};
+
+type Vehicle = {
+  id: number;
+  customer_id: number;
+  make: string | null;
+  model: string | null;
+  year: string | null;
+  license_plate: string | null;
+  archived?: number;
 };
 
 type CreateCustomerPayload = {
@@ -78,6 +89,163 @@ const Dashboard = () => {
   });
 
   const customers = customersData ?? [];
+
+  const vehiclesQueryKey = ["customerVehicles", selectedCustomer?.id ?? "none"];
+  const customerVehiclesEnabled =
+    Boolean(selectedCustomer?.id) && (customerDetailOpen || editCustomerOpen);
+
+  const {
+    data: customerVehicles,
+    isLoading: customerVehiclesLoading,
+    isError: customerVehiclesError,
+    error: customerVehiclesErrorObject,
+  } = useQuery<Vehicle[], Error>({
+    queryKey: vehiclesQueryKey,
+    queryFn: () => apiFetch<Vehicle[]>(`/vehicles?customer_id=${selectedCustomer?.id ?? ""}`),
+    enabled: customerVehiclesEnabled,
+  });
+
+  const activeCustomerVehicles = useMemo(
+    () => (customerVehicles ?? []).filter((vehicle) => (vehicle.archived ?? 0) === 0),
+    [customerVehicles]
+  );
+
+  const [vehicleEdits, setVehicleEdits] = useState<
+    Record<number, { make: string; model: string; year: string; license_plate: string }>
+  >({});
+  const [vehicleSavingId, setVehicleSavingId] = useState<number | null>(null);
+  const [vehicleDeletingId, setVehicleDeletingId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!activeCustomerVehicles || activeCustomerVehicles.length === 0) {
+      setVehicleEdits({});
+      return;
+    }
+
+    setVehicleEdits(() => {
+      const next: Record<number, { make: string; model: string; year: string; license_plate: string }> = {};
+      activeCustomerVehicles.forEach((vehicle) => {
+        next[vehicle.id] = {
+          make: vehicle.make ?? "",
+          model: vehicle.model ?? "",
+          year: vehicle.year ?? "",
+          license_plate: vehicle.license_plate ?? "",
+        };
+      });
+      return next;
+    });
+  }, [activeCustomerVehicles]);
+
+  const updateVehicleMutation = useMutation<
+    Vehicle,
+    Error,
+    { id: number; payload: { make: string; model: string; year: string | null; license_plate: string | null } }
+  >({
+    mutationFn: ({ id, payload }) =>
+      apiFetch<Vehicle>(`/vehicles/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    onMutate: ({ id }) => {
+      setVehicleSavingId(id);
+    },
+    onSuccess: (vehicle) => {
+      toast({
+        title: "Vehicle updated",
+        description: `${vehicle.make ?? "Vehicle"} ${vehicle.model ?? ""} updated successfully.`,
+      });
+      queryClient.invalidateQueries({ queryKey: vehiclesQueryKey });
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to update vehicle",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => {
+      setVehicleSavingId(null);
+    },
+  });
+
+  const deleteVehicleMutation = useMutation<void, Error, number>({
+    mutationFn: (id) =>
+      apiFetch(`/vehicles/${id}`, {
+        method: "DELETE",
+      }),
+    onMutate: (id) => {
+      setVehicleDeletingId(id);
+    },
+    onSuccess: (_, id) => {
+      toast({
+        title: "Vehicle unassigned",
+        description: "Vehicle removed from customer successfully.",
+      });
+      setVehicleEdits((prev) => {
+        const { [id]: _removed, ...rest } = prev;
+        return rest;
+      });
+      queryClient.invalidateQueries({ queryKey: vehiclesQueryKey });
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to unassign vehicle",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => {
+      setVehicleDeletingId(null);
+    },
+  });
+
+  const handleVehicleFieldChange = (
+    vehicleId: number,
+    field: "make" | "model" | "year" | "license_plate",
+    value: string
+  ) => {
+    setVehicleEdits((prev) => ({
+      ...prev,
+      [vehicleId]: {
+        make: prev[vehicleId]?.make ?? "",
+        model: prev[vehicleId]?.model ?? "",
+        year: prev[vehicleId]?.year ?? "",
+        license_plate: prev[vehicleId]?.license_plate ?? "",
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSaveVehicle = (vehicleId: number) => {
+    const edits = vehicleEdits[vehicleId];
+    if (!edits) return;
+
+    const trimmedMake = edits.make.trim();
+    const trimmedModel = edits.model.trim();
+
+    if (!trimmedMake || !trimmedModel) {
+      toast({
+        title: "Vehicle details required",
+        description: "Please provide both make and model before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    updateVehicleMutation.mutate({
+      id: vehicleId,
+      payload: {
+        make: trimmedMake,
+        model: trimmedModel,
+        year: edits.year.trim() ? edits.year.trim() : null,
+        license_plate: edits.license_plate.trim() ? edits.license_plate.trim() : null,
+      },
+    });
+  };
+
+  const handleUnassignVehicle = (vehicleId: number) => {
+    deleteVehicleMutation.mutate(vehicleId);
+  };
 
   const createCustomerMutation = useMutation<
     Customer,
@@ -421,6 +589,45 @@ const Dashboard = () => {
                     </div>
                   </div>
 
+                  <div className="space-y-2 pt-4 border-t">
+                    <Label className="text-muted-foreground">Assigned Vehicles</Label>
+                    {customerVehiclesLoading && (
+                      <p className="text-sm text-muted-foreground">Loading vehicles...</p>
+                    )}
+                    {customerVehiclesError && (
+                      <p className="text-sm text-destructive">
+                        {customerVehiclesErrorObject?.message ?? "Unable to load vehicles for this customer."}
+                      </p>
+                    )}
+                    {!customerVehiclesLoading &&
+                      !customerVehiclesError &&
+                      activeCustomerVehicles.length === 0 && (
+                        <p className="text-sm text-muted-foreground">
+                          No vehicles linked to this customer yet.
+                        </p>
+                      )}
+                    {!customerVehiclesLoading &&
+                      !customerVehiclesError &&
+                      activeCustomerVehicles.length > 0 && (
+                        <div className="space-y-2">
+                          {activeCustomerVehicles.map((vehicle) => (
+                            <div
+                              key={vehicle.id}
+                              className="rounded-md border border-muted px-3 py-2"
+                            >
+                              <p className="font-semibold">
+                                {[vehicle.make, vehicle.model].filter(Boolean).join(" ") || "Vehicle"}
+                                {vehicle.year ? ` ${vehicle.year}` : ""}
+                              </p>
+                              <p className="text-sm text-muted-foreground">
+                                Plate: {vehicle.license_plate || "Not provided"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+
                   <div className="flex gap-3 pt-4 border-t">
                     <Button
                       variant="outline"
@@ -497,6 +704,153 @@ const Dashboard = () => {
                       name="address"
                       defaultValue={selectedCustomer.address ?? ""}
                     />
+                  </div>
+                  <div className="space-y-2 pt-4 border-t">
+                    <Label>Assigned Vehicles</Label>
+                    {customerVehiclesLoading && customerVehiclesEnabled && (
+                      <p className="text-sm text-muted-foreground">Loading vehicles...</p>
+                    )}
+                    {customerVehiclesError && customerVehiclesEnabled && (
+                      <p className="text-sm text-destructive">
+                        {customerVehiclesErrorObject?.message ?? "Unable to load vehicles for this customer."}
+                      </p>
+                    )}
+                    {!customerVehiclesLoading &&
+                      !customerVehiclesError &&
+                      activeCustomerVehicles.length === 0 && (
+                        <p className="text-sm text-muted-foreground">
+                          No vehicles are currently assigned to this customer.
+                        </p>
+                      )}
+                    {!customerVehiclesLoading &&
+                      !customerVehiclesError &&
+                      activeCustomerVehicles.length > 0 && (
+                        <div className="space-y-3">
+                          {activeCustomerVehicles.map((vehicle) => {
+                            const original = {
+                              make: vehicle.make ?? "",
+                              model: vehicle.model ?? "",
+                              year: vehicle.year ?? "",
+                              license_plate: vehicle.license_plate ?? "",
+                            };
+                            const edits = vehicleEdits[vehicle.id] ?? original;
+                            const isDirty =
+                              edits.make.trim() !== original.make.trim() ||
+                              edits.model.trim() !== original.model.trim() ||
+                              edits.year.trim() !== original.year.trim() ||
+                              edits.license_plate.trim() !== original.license_plate.trim();
+                            return (
+                              <div
+                                key={vehicle.id}
+                                className="rounded-lg border border-border bg-muted/10 p-4 shadow-sm transition hover:shadow-md"
+                              >
+                                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                  <div>
+                                    <p className="text-sm font-semibold text-muted-foreground">
+                                      Vehicle #{vehicle.id}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      Current:{' '}
+                                      {[original.make, original.model, original.year]
+                                        .filter((value) => value && value.trim().length > 0)
+                                        .join(" ") || "No saved details"}
+                                    </p>
+                                  </div>
+                                  {isDirty && (
+                                    <Badge variant="secondary" className="w-fit bg-primary/10 text-primary">
+                                      Unsaved changes
+                                    </Badge>
+                                  )}
+                                </div>
+                                <div className="mt-3 grid gap-4 md:grid-cols-2">
+                                  <div className="space-y-1">
+                                    <Label htmlFor={`vehicle-make-${vehicle.id}`}>Make</Label>
+                                    <Input
+                                      id={`vehicle-make-${vehicle.id}`}
+                                      value={edits.make}
+                                      onChange={(event) =>
+                                        handleVehicleFieldChange(vehicle.id, "make", event.target.value)
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label htmlFor={`vehicle-model-${vehicle.id}`}>Model</Label>
+                                    <Input
+                                      id={`vehicle-model-${vehicle.id}`}
+                                      value={edits.model}
+                                      onChange={(event) =>
+                                        handleVehicleFieldChange(vehicle.id, "model", event.target.value)
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label htmlFor={`vehicle-year-${vehicle.id}`}>Year</Label>
+                                    <Input
+                                      id={`vehicle-year-${vehicle.id}`}
+                                      value={edits.year}
+                                      onChange={(event) =>
+                                        handleVehicleFieldChange(vehicle.id, "year", event.target.value)
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label htmlFor={`vehicle-plate-${vehicle.id}`}>Registration</Label>
+                                    <Input
+                                      id={`vehicle-plate-${vehicle.id}`}
+                                      value={edits.license_plate}
+                                      onChange={(event) =>
+                                        handleVehicleFieldChange(vehicle.id, "license_plate", event.target.value)
+                                      }
+                                    />
+                                  </div>
+                                </div>
+                                <div className="mt-3 flex flex-col gap-2 md:flex-row md:justify-end">
+                                  <Button
+                                    type="button"
+                                    variant={isDirty ? "default" : "secondary"}
+                                    className={!isDirty ? "text-muted-foreground" : undefined}
+                                    onClick={() => handleSaveVehicle(vehicle.id)}
+                                    disabled={vehicleSavingId === vehicle.id || !isDirty}
+                                  >
+                                    {vehicleSavingId === vehicle.id ? "Saving..." : "Save Vehicle"}
+                                  </Button>
+                                  <Dialog>
+                                    <DialogTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        disabled={vehicleDeletingId === vehicle.id}
+                                      >
+                                        Unassign Vehicle
+                                      </Button>
+                                    </DialogTrigger>
+                                    <DialogContent className="max-w-md">
+                                      <DialogHeader>
+                                        <DialogTitle>Unassign vehicle?</DialogTitle>
+                                        <DialogDescription>
+                                          This removes the vehicle from {selectedCustomer?.name ?? "the customer"}.
+                                          Jobs that are completed will keep their history, but active jobs must be closed
+                                          before unassigning.
+                                        </DialogDescription>
+                                      </DialogHeader>
+                                      <div className="flex justify-end gap-3">
+                                        <Button variant="outline">Cancel</Button>
+                                        <Button
+                                          variant="destructive"
+                                          onClick={() => handleUnassignVehicle(vehicle.id)}
+                                          disabled={vehicleDeletingId === vehicle.id}
+                                        >
+                                          {vehicleDeletingId === vehicle.id ? "Unassigning..." : "Confirm"}
+                                        </Button>
+                                      </div>
+                                    </DialogContent>
+                                  </Dialog>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                   </div>
                   <div className="flex justify-end gap-3 pt-4">
                     <Button

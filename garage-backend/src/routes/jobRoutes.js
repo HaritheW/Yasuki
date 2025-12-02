@@ -64,8 +64,20 @@ const normalizeIdArray = (value) => {
 };
 
 const fetchJobDetails = async (jobId) => {
-    const job = await getAsync("SELECT * FROM Jobs WHERE id = ?", [jobId]);
+    const job = await getAsync(
+        `
+        SELECT Jobs.*, Customers.name AS customer_name
+        FROM Jobs
+        LEFT JOIN Customers ON Customers.id = Jobs.customer_id
+        WHERE Jobs.id = ?
+    `,
+        [jobId]
+    );
     if (!job) return null;
+
+    const vehicle = job.vehicle_id
+        ? await getAsync("SELECT * FROM Vehicles WHERE id = ?", [job.vehicle_id])
+        : null;
 
     const technicians = await allAsync(
         `
@@ -89,6 +101,7 @@ const fetchJobDetails = async (jobId) => {
 
     return {
         ...job,
+        vehicle,
         technicians,
         items,
     };
@@ -323,15 +336,62 @@ router.get("/", async (req, res) => {
     try {
         const jobs = await allAsync(
             `
-            SELECT Jobs.*, Customers.name AS customer_name
+            SELECT
+                Jobs.*,
+                Customers.name AS customer_name,
+                Vehicles.make AS vehicle_make,
+                Vehicles.model AS vehicle_model,
+                Vehicles.year AS vehicle_year,
+                Vehicles.license_plate AS vehicle_license_plate
             FROM Jobs
             LEFT JOIN Customers ON Customers.id = Jobs.customer_id
+            LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
             ${whereClause}
             ORDER BY Jobs.created_at DESC
         `,
             params
         );
-        res.json(jobs);
+
+        if (!jobs.length) {
+            return res.json([]);
+        }
+
+        const jobIds = jobs.map((job) => job.id);
+        const placeholders = jobIds.map(() => "?").join(", ");
+
+        const technicianRows = await allAsync(
+            `
+            SELECT
+                JobTechnicians.job_id,
+                Technicians.id,
+                Technicians.name,
+                Technicians.status
+            FROM JobTechnicians
+            INNER JOIN Technicians ON Technicians.id = JobTechnicians.technician_id
+            WHERE JobTechnicians.job_id IN (${placeholders})
+            ORDER BY Technicians.name ASC
+        `,
+            jobIds
+        );
+
+        const techniciansByJob = technicianRows.reduce((acc, row) => {
+            if (!acc[row.job_id]) {
+                acc[row.job_id] = [];
+            }
+            acc[row.job_id].push({
+                id: row.id,
+                name: row.name,
+                status: row.status,
+            });
+            return acc;
+        }, {});
+
+        const jobsWithTechnicians = jobs.map((job) => ({
+            ...job,
+            technicians: techniciansByJob[job.id] ?? [],
+        }));
+
+        res.json(jobsWithTechnicians);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

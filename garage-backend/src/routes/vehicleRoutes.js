@@ -29,7 +29,7 @@ router.post("/", (req, res) => {
 
 // Get all vehicles (optional filter by customer_id)
 router.get("/", (req, res) => {
-    const { customer_id } = req.query;
+    const { customer_id, include_archived } = req.query;
 
     const baseQuery = "SELECT * FROM Vehicles";
     const filters = [];
@@ -38,6 +38,10 @@ router.get("/", (req, res) => {
     if (customer_id) {
         filters.push("customer_id = ?");
         params.push(customer_id);
+    }
+
+    if (!include_archived || include_archived === "0" || include_archived === "false") {
+        filters.push("archived = 0");
     }
 
     const whereClause = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
@@ -87,17 +91,49 @@ router.put("/:id", (req, res) => {
     );
 });
 
-// Delete vehicle
+// Soft delete / unassign vehicle from customer
 router.delete("/:id", (req, res) => {
     const { id } = req.params;
 
-    db.run("DELETE FROM Vehicles WHERE id = ?", [id], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) {
-            return res.status(404).json({ error: "Vehicle not found" });
+    db.get(
+        `
+        SELECT id, job_status
+        FROM Jobs
+        WHERE vehicle_id = ?
+          AND job_status NOT IN ('Completed', 'Cancelled')
+        LIMIT 1
+    `,
+        [id],
+        (jobErr, activeJob) => {
+            if (jobErr) {
+                return res.status(500).json({ error: jobErr.message });
+            }
+
+            if (activeJob) {
+                return res.status(409).json({
+                    error: `Vehicle cannot be unassigned while job #${activeJob.id} is ${activeJob.job_status.toLowerCase()}. Complete or cancel the job first.`,
+                });
+            }
+
+            db.run(
+                `
+                UPDATE Vehicles
+                SET archived = 1
+                WHERE id = ?
+            `,
+                [id],
+                function (err) {
+                    if (err) {
+                        return res.status(500).json({ error: err.message });
+                    }
+                    if (this.changes === 0) {
+                        return res.status(404).json({ error: "Vehicle not found" });
+                    }
+                    res.json({ message: "Vehicle unassigned" });
+                }
+            );
         }
-        res.json({ message: "Vehicle deleted" });
-    });
+    );
 });
 
 module.exports = router;

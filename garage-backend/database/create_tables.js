@@ -39,12 +39,25 @@ db.serialize(() => {
             model TEXT,
             year TEXT,
             license_plate TEXT,
+            archived INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(customer_id) REFERENCES Customers(id)
         );
     `,
         logTableResult("Vehicles")
+    );
+
+    db.run(
+        `
+        ALTER TABLE Vehicles
+        ADD COLUMN archived INTEGER DEFAULT 0;
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Vehicles add archived column error:", err.message);
+            }
+        }
     );
 
     // ----------------------------------
