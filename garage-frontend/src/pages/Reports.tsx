@@ -147,7 +147,7 @@ const Reports = () => {
                 <TrendingUp className="h-4 w-4" />
                 Total Revenue
               </p>
-              <p className="text-2xl font-bold">$328,000</p>
+              <p className="text-2xl font-bold">LKR 328,000</p>
             </div>
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground flex items-center gap-2">
@@ -161,7 +161,7 @@ const Reports = () => {
                 <TrendingUp className="h-4 w-4" />
                 Avg. Job Value
               </p>
-              <p className="text-2xl font-bold">$387</p>
+              <p className="text-2xl font-bold">LKR 387</p>
             </div>
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground flex items-center gap-2">

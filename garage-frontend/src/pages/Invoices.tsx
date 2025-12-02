@@ -11,11 +11,18 @@ import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 
 const mockInvoices = [
-  { id: "INV-001", customer: "John Smith", date: "2024-01-15", amount: "$250", status: "Paid", remarks: "Payment received via bank transfer" },
-  { id: "INV-002", customer: "Sarah Williams", date: "2024-01-14", amount: "$180", status: "Pending", remarks: "Customer requested 7-day extension" },
-  { id: "INV-003", customer: "Robert Brown", date: "2024-01-13", amount: "$450", status: "Paid", remarks: "Cash payment, receipt issued" },
-  { id: "INV-004", customer: "Emily Davis", date: "2024-01-12", amount: "$320", status: "Overdue", remarks: "Follow up call scheduled" },
+  { id: "INV-001", customer: "John Smith", date: "2024-01-15", amount: 250_000, status: "Paid", remarks: "Payment received via bank transfer" },
+  { id: "INV-002", customer: "Sarah Williams", date: "2024-01-14", amount: 180_000, status: "Pending", remarks: "Customer requested 7-day extension" },
+  { id: "INV-003", customer: "Robert Brown", date: "2024-01-13", amount: 450_000, status: "Paid", remarks: "Cash payment, receipt issued" },
+  { id: "INV-004", customer: "Emily Davis", date: "2024-01-12", amount: 320_000, status: "Overdue", remarks: "Follow up call scheduled" },
 ];
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "LKR",
+    maximumFractionDigits: 2,
+  }).format(value);
 
 const Invoices = () => {
   const [emailOpen, setEmailOpen] = useState(false);
@@ -190,7 +197,7 @@ const Invoices = () => {
                     <td className="p-3 font-medium">{invoice.id}</td>
                     <td className="p-3">{invoice.customer}</td>
                     <td className="p-3 text-muted-foreground">{invoice.date}</td>
-                    <td className="p-3 font-semibold">{invoice.amount}</td>
+                    <td className="p-3 font-semibold">{formatCurrency(invoice.amount)}</td>
                     <td className="p-3">
                       <Badge className={getStatusColor(invoice.status)}>
                         {invoice.status}
@@ -265,9 +272,15 @@ const Invoices = () => {
                   <h2 className="text-2xl font-bold">{selectedInvoiceDetail.id}</h2>
                   <p className="text-muted-foreground">{selectedInvoiceDetail.date}</p>
                 </div>
-                <Badge className={getStatusColor(selectedInvoiceDetail.status)}>
-                  {selectedInvoiceDetail.status}
-                </Badge>
+                <div className="flex flex-col items-end gap-2">
+                  <Badge className={getStatusColor(selectedInvoiceDetail.status)}>
+                    {selectedInvoiceDetail.status}
+                  </Badge>
+                  <div className="text-right">
+                    <Label className="text-xs text-muted-foreground uppercase tracking-wide">Invoice total</Label>
+                    <p className="font-semibold text-lg">{formatCurrency(selectedInvoiceDetail.amount)}</p>
+                  </div>
+                </div>
               </div>
 
               {/* Customer Info */}
@@ -309,13 +322,13 @@ const Invoices = () => {
                             )}
                           </td>
                           <td className="p-3 text-right">
-                            ${(charge.amount * charge.quantity).toFixed(2)}
+                            {formatCurrency(charge.amount * charge.quantity)}
                           </td>
                         </tr>
                       ))}
                       <tr className="font-semibold">
                         <td className="p-3">Total Charges</td>
-                        <td className="p-3 text-right">${totalCharges.toFixed(2)}</td>
+                        <td className="p-3 text-right">{formatCurrency(totalCharges)}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -337,12 +350,12 @@ const Invoices = () => {
                       {reductions.map((reduction, idx) => (
                         <tr key={idx} className="border-b">
                           <td className="p-3">{reduction.category}</td>
-                          <td className="p-3 text-right">-${reduction.amount.toFixed(2)}</td>
+                          <td className="p-3 text-right">{formatCurrency(-reduction.amount)}</td>
                         </tr>
                       ))}
                       <tr className="font-semibold">
                         <td className="p-3">Total Reductions</td>
-                        <td className="p-3 text-right">-${totalReductions.toFixed(2)}</td>
+                        <td className="p-3 text-right">{formatCurrency(-totalReductions)}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -353,7 +366,7 @@ const Invoices = () => {
               <div className="pt-4 border-t">
                 <div className="flex justify-between items-center text-xl font-bold">
                   <span>Final Amount</span>
-                  <span>${finalAmount.toFixed(2)}</span>
+                  <span>{formatCurrency(finalAmount)}</span>
                 </div>
               </div>
 
@@ -443,7 +456,7 @@ const Invoices = () => {
                     <Input id="category" name="category" placeholder="e.g., Labor, Parts, Discount" />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="amount">Amount ($)</Label>
+                    <Label htmlFor="amount">Amount (LKR)</Label>
                     <Input id="amount" name="amount" type="number" step="0.01" placeholder="0.00" />
                   </div>
                 </div>
@@ -469,7 +482,7 @@ const Invoices = () => {
                     <Input id="quantity" name="quantity" type="number" step="0.01" placeholder="0" />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="itemCost">Cost per Unit ($)</Label>
+                    <Label htmlFor="itemCost">Cost per Unit (LKR)</Label>
                     <Input id="itemCost" name="itemCost" type="number" step="0.01" placeholder="0.00" />
                   </div>
                 </div>

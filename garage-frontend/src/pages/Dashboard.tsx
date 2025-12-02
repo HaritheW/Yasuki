@@ -331,6 +331,8 @@ const Dashboard = () => {
   const totalExpenses = revenueData.reduce((sum, item) => sum + item.expenses, 0);
   const netProfit = totalRevenue - totalExpenses;
   const profitMargin = ((netProfit / totalRevenue) * 100).toFixed(1);
+  const formatDashboardCurrency = (value: number) =>
+    new Intl.NumberFormat(undefined, { style: "currency", currency: "LKR" }).format(value);
 
   const handleAddCustomer = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -913,7 +915,7 @@ const Dashboard = () => {
             <DollarSign className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalRevenue.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{formatDashboardCurrency(totalRevenue)}</div>
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
               <TrendingUp className="h-3 w-3 text-success" />
               <span className="text-success">+12.5%</span> from last month
@@ -927,7 +929,7 @@ const Dashboard = () => {
             <TrendingDown className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalExpenses.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{formatDashboardCurrency(totalExpenses)}</div>
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
               <TrendingUp className="h-3 w-3 text-warning" />
               <span className="text-warning">+5.2%</span> from last month
@@ -941,7 +943,7 @@ const Dashboard = () => {
             <DollarSign className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${netProfit.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{formatDashboardCurrency(netProfit)}</div>
             <p className="text-xs text-muted-foreground mt-1">
               Margin: <span className="text-success font-semibold">{profitMargin}%</span>
             </p>

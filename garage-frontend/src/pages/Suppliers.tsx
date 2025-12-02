@@ -84,7 +84,7 @@ const formatCurrency = (value: number | null | undefined) =>
     ? "—"
     : new Intl.NumberFormat(undefined, {
         style: "currency",
-        currency: "USD",
+        currency: "LKR",
       }).format(value);
 
 const formatDate = (value: string | null | undefined) => {
@@ -787,7 +787,7 @@ const Suppliers = () => {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="purchaseCost">Unit Cost ($)</Label>
+                  <Label htmlFor="purchaseCost">Unit Cost (LKR)</Label>
                     <Input
                       id="purchaseCost"
                       name="unit_cost"
@@ -1400,7 +1400,7 @@ const Suppliers = () => {
                   <Input value={selectedPurchase.quantity} disabled />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="editPurchaseCost">Unit Cost ($)</Label>
+                  <Label htmlFor="editPurchaseCost">Unit Cost (LKR)</Label>
                   <Input
                     id="editPurchaseCost"
                     name="unit_cost"

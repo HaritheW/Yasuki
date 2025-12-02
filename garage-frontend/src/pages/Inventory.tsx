@@ -95,7 +95,7 @@ const formatCurrency = (value: number | null | undefined) =>
     ? "—"
     : new Intl.NumberFormat(undefined, {
         style: "currency",
-        currency: "USD",
+        currency: "LKR",
       }).format(value);
 
 const Inventory = () => {
@@ -671,7 +671,7 @@ const Inventory = () => {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="unit_cost">Unit Cost ($)</Label>
+                    <Label htmlFor="unit_cost">Unit Cost (LKR)</Label>
                     <Input id="unit_cost" name="unit_cost" type="number" step="0.01" min="0" placeholder="0.00" />
                   </div>
                 </div>
@@ -1021,7 +1021,7 @@ const Inventory = () => {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="editUnitCost">Unit Cost ($)</Label>
+                <Label htmlFor="editUnitCost">Unit Cost (LKR)</Label>
                 <Input
                   id="editUnitCost"
                   name="unit_cost"

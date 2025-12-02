@@ -395,7 +395,7 @@ const Expenses = () => {
   };
 
   const currency = (value: number) =>
-    new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(value);
+    new Intl.NumberFormat(undefined, { style: "currency", currency: "LKR" }).format(value);
 
   const formatDate = (value: string) => {
     if (!value) return "—";
@@ -472,7 +472,7 @@ const Expenses = () => {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="amount">Amount ($)</Label>
+                <Label htmlFor="amount">Amount (LKR)</Label>
                 <Input
                   id="amount"
                   name="amount"
