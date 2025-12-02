@@ -95,6 +95,16 @@ router.delete("/:id", (req, res) => {
 // Jobs assigned to a technician
 router.get("/:id/jobs", (req, res) => {
     const { id } = req.params;
+    const { include_completed } = req.query;
+
+    const includeAllStatuses =
+        include_completed === "1" ||
+        include_completed === "true" ||
+        include_completed === "yes";
+
+    const statusFilterClause = includeAllStatuses
+        ? ""
+        : "AND Jobs.job_status NOT IN ('Completed', 'Cancelled')";
 
     const query = `
         SELECT
@@ -106,6 +116,7 @@ router.get("/:id/jobs", (req, res) => {
         LEFT JOIN Customers ON Customers.id = Jobs.customer_id
         LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
         WHERE JobTechnicians.technician_id = ?
+        ${statusFilterClause}
         ORDER BY Jobs.created_at DESC
     `;
 
