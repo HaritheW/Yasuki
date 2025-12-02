@@ -583,15 +583,6 @@ router.post("/", async (req, res) => {
         const rawReductions = Array.isArray(reductions) ? [...reductions] : [];
 
         if (
-            job.initial_amount > 0 &&
-            !rawCharges.some(
-                (entry) => typeof entry.label === "string" && entry.label.trim().toLowerCase() === "initial amount"
-            )
-        ) {
-            rawCharges.unshift({ label: "Initial Amount", amount: job.initial_amount });
-        }
-
-        if (
             job.advance_amount > 0 &&
             !rawReductions.some(
                 (entry) => typeof entry.label === "string" && entry.label.trim().toLowerCase() === "advance"
@@ -826,6 +817,16 @@ router.delete("/:id", async (req, res) => {
         await runAsync("DELETE FROM InvoiceExtraItems WHERE invoice_id = ?", [id]);
         await runAsync("DELETE FROM InvoiceItems WHERE invoice_id = ?", [id]);
         await runAsync("DELETE FROM Invoices WHERE id = ?", [id]);
+        if (existing.job_id) {
+            await runAsync(
+                `
+                UPDATE Jobs
+                SET invoice_created = 0
+                WHERE id = ?
+            `,
+                [existing.job_id]
+            );
+        }
 
         await runAsync("COMMIT");
 

@@ -30,6 +30,98 @@ const allAsync = (sql, params = []) =>
         });
     });
 
+const generateInvoiceNumber = () => {
+    const suffix = Math.floor(1000 + Math.random() * 9000);
+    return `INV-${suffix}`;
+};
+
+const computeInvoiceTotals = (charges = [], reductions = []) => {
+    const itemsTotal = charges.reduce((sum, item) => {
+        const quantity = Number(item.quantity ?? 1);
+        const unitPrice = Number(item.unit_price ?? 0);
+        return sum + quantity * unitPrice;
+    }, 0);
+
+    const totalCharges = reductions
+        .filter((extra) => extra.type === "charge")
+        .reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0);
+
+    const totalDeductions = reductions
+        .filter((extra) => extra.type === "deduction")
+        .reduce((sum, deduction) => sum + Number(deduction.amount ?? 0), 0);
+
+    const finalTotal = itemsTotal + totalCharges - totalDeductions;
+
+    return {
+        itemsTotal: Number(itemsTotal.toFixed(2)),
+        totalCharges: Number(totalCharges.toFixed(2)),
+        totalDeductions: Number(totalDeductions.toFixed(2)),
+        finalTotal: Number(finalTotal.toFixed(2)),
+    };
+};
+
+const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = "unpaid", notes = null }) => {
+    const invoiceNo = generateInvoiceNumber();
+    const totals = computeInvoiceTotals(charges, extras);
+
+    const insertInvoiceResult = await runAsync(
+        `
+        INSERT INTO Invoices (
+            job_id, invoice_no, invoice_date, items_total,
+            total_charges, total_deductions, final_total, payment_status, notes
+        )
+        VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+    `,
+        [
+            jobId,
+            invoiceNo,
+            totals.itemsTotal,
+            totals.totalCharges,
+            totals.totalDeductions,
+            totals.finalTotal,
+            status,
+            notes,
+        ]
+    );
+
+    const invoiceId = insertInvoiceResult.lastID;
+
+    for (const charge of charges) {
+        await runAsync(
+            `
+            INSERT INTO InvoiceItems (invoice_id, inventory_item_id, item_name, quantity, unit_price, line_total, type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+            [
+                invoiceId,
+                charge.inventory_item_id ?? null,
+                charge.item_name,
+                charge.quantity ?? 1,
+                charge.unit_price ?? 0,
+                (charge.quantity ?? 1) * (charge.unit_price ?? 0),
+                charge.type ?? "consumable",
+            ]
+        );
+    }
+
+    for (const extra of extras) {
+        await runAsync(
+            `
+            INSERT INTO InvoiceExtraItems (invoice_id, label, type, amount)
+            VALUES (?, ?, ?, ?)
+        `,
+            [invoiceId, extra.label, extra.type, extra.amount]
+        );
+    }
+
+    const invoice = await getAsync("SELECT * FROM Invoices WHERE id = ?", [invoiceId]);
+    return {
+        ...invoice,
+        charges,
+        extras,
+    };
+};
+
 const parseAmount = (value, fieldName) => {
     if (value === undefined || value === null || value === "") return 0;
     const amount = Number(value);
@@ -99,11 +191,21 @@ const fetchJobDetails = async (jobId) => {
         [jobId]
     );
 
+    const invoice = await getAsync(
+        `
+        SELECT id, invoice_no, final_total, payment_status
+        FROM Invoices
+        WHERE job_id = ?
+    `,
+        [jobId]
+    );
+
     return {
         ...job,
         vehicle,
         technicians,
         items,
+        invoice,
     };
 };
 
@@ -196,6 +298,59 @@ const prepareJobItems = async (jobId, items = []) => {
     }
 
     return preparedItems;
+};
+
+const prepareInvoicePayloadFromJob = async (jobId, jobMeta = {}) => {
+    const charges = await allAsync(
+        `
+        SELECT
+            inventory_item_id,
+            item_name,
+            quantity,
+            unit_price,
+            line_total,
+            item_type
+        FROM JobItems
+        WHERE job_id = ?
+    `,
+        [jobId]
+    );
+
+    let meta = jobMeta;
+    if (meta.initial_amount === undefined || meta.advance_amount === undefined) {
+        const snapshot = await getAsync(
+            `
+            SELECT initial_amount, advance_amount
+            FROM Jobs
+            WHERE id = ?
+        `,
+            [jobId]
+        );
+        meta = snapshot || {};
+    }
+
+    const extras = [];
+    if (meta.advance_amount && Number(meta.advance_amount) > 0) {
+        extras.push({ label: "Advance", amount: Number(meta.advance_amount), type: "deduction" });
+    }
+
+    return {
+        charges: charges.map((item) => {
+            const quantity = Number(item.quantity ?? 1) || 1;
+            const unitPriceRaw = item.unit_price ?? (item.line_total ?? 0) / quantity;
+            const unitPrice = Number(unitPriceRaw) || 0;
+            const lineTotal = Number(item.line_total ?? quantity * unitPrice) || quantity * unitPrice;
+            return {
+                inventory_item_id: item.inventory_item_id,
+                item_name: item.item_name,
+                quantity,
+                unit_price: unitPrice,
+                line_total: lineTotal,
+                type: item.item_type ?? "consumable",
+            };
+        }),
+        extras,
+    };
 };
 
 // Create job
@@ -415,7 +570,15 @@ router.get("/:id", async (req, res) => {
 // Update job
 router.put("/:id", async (req, res) => {
     const { id } = req.params;
-    const { job_status, notes, initial_amount, advance_amount, technician_ids, items } = req.body;
+    const {
+        job_status,
+        notes,
+        initial_amount,
+        advance_amount,
+        technician_ids,
+        items,
+        create_invoice,
+    } = req.body;
 
     if (job_status && !VALID_JOB_STATUSES.includes(job_status)) {
         return res.status(400).json({ error: "Invalid job status value" });
@@ -469,6 +632,28 @@ router.put("/:id", async (req, res) => {
             await prepareJobItems(id, items);
         }
 
+        let createdInvoice = null;
+        if (
+            create_invoice &&
+            nextStatus === "Completed" &&
+            !existingJob.invoice_created &&
+            nextInitialAmount !== null
+        ) {
+            const payload = await prepareInvoicePayloadFromJob(id, {
+                initial_amount: nextInitialAmount,
+                advance_amount: nextAdvanceAmount,
+            });
+            const invoice = await createInvoiceForJob({
+                jobId: id,
+                charges: payload.charges,
+                extras: payload.extras,
+                status: "unpaid",
+                notes: nextNotes,
+            });
+            createdInvoice = invoice;
+            await runAsync("UPDATE Jobs SET invoice_created = 1 WHERE id = ?", [id]);
+        }
+
         await runAsync(
             `
             UPDATE Jobs
@@ -501,7 +686,13 @@ router.put("/:id", async (req, res) => {
         }
 
         const jobDetails = await fetchJobDetails(id);
-        res.json(jobDetails);
+        const responseBody = {
+            ...jobDetails,
+        };
+        if (createdInvoice) {
+            responseBody.invoice = createdInvoice;
+        }
+        res.json(responseBody);
     } catch (error) {
         try {
             await runAsync("ROLLBACK");

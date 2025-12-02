@@ -116,6 +116,7 @@ db.serialize(() => {
             advance_amount REAL,
             job_status TEXT CHECK(job_status IN ('Pending', 'In Progress', 'Completed', 'Cancelled')) DEFAULT 'Pending',
             status_changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            invoice_created INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(customer_id) REFERENCES Customers(id),
@@ -123,6 +124,18 @@ db.serialize(() => {
         );
     `,
         logTableResult("Jobs")
+    );
+
+    db.run(
+        `
+        ALTER TABLE Jobs
+        ADD COLUMN invoice_created INTEGER DEFAULT 0;
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Jobs add invoice_created column error:", err.message);
+            }
+        }
     );
 
     // ----------------------------------

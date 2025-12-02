@@ -2,133 +2,402 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Search, FileText, Mail, Download, Plus, Edit } from "lucide-react";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Search, FileText, Mail, Download, Edit } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useState, useEffect } from "react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api";
 
-const mockInvoices = [
-  { id: "INV-001", customer: "John Smith", date: "2024-01-15", amount: 250_000, status: "Paid", remarks: "Payment received via bank transfer" },
-  { id: "INV-002", customer: "Sarah Williams", date: "2024-01-14", amount: 180_000, status: "Pending", remarks: "Customer requested 7-day extension" },
-  { id: "INV-003", customer: "Robert Brown", date: "2024-01-13", amount: 450_000, status: "Paid", remarks: "Cash payment, receipt issued" },
-  { id: "INV-004", customer: "Emily Davis", date: "2024-01-12", amount: 320_000, status: "Overdue", remarks: "Follow up call scheduled" },
-];
+type InvoiceSummary = {
+  id: number;
+  invoice_no: string | null;
+  job_id: number | null;
+  invoice_date: string;
+  payment_status: string;
+  final_total: number | null;
+  items_total: number | null;
+  total_charges: number | null;
+  total_deductions: number | null;
+  notes: string | null;
+  customer_name: string | null;
+};
 
-const formatCurrency = (value: number) =>
-  new Intl.NumberFormat(undefined, {
+type InvoiceItem = {
+  id: number;
+  invoice_id: number;
+  inventory_item_id: number | null;
+  item_name: string;
+  type: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+};
+
+type InvoiceExtra = {
+  id: number;
+  label: string;
+  type: "charge" | "deduction";
+  amount: number;
+};
+
+type InvoiceDetail = InvoiceSummary & {
+  items: InvoiceItem[];
+  charges: InvoiceExtra[];
+  reductions: InvoiceExtra[];
+  payment_method: string | null;
+};
+
+type InventoryOption = {
+  id: number;
+  name: string;
+  type: "consumable" | "non-consumable" | "bulk";
+  quantity: number;
+  unit_cost: number | null;
+};
+
+type UpdateInvoicePayload = {
+  payment_method: string | null;
+  payment_status: "unpaid" | "partial" | "paid";
+  notes: string | null;
+  charges: Array<{ label: string; amount: number }>;
+  reductions: Array<{ label: string; amount: number }>;
+};
+
+const formatCurrency = (value: number | null | undefined) => {
+  if (value === null || value === undefined) return "—";
+  return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: "LKR",
     maximumFractionDigits: 2,
   }).format(value);
+};
+
+const formatDate = (value: string | null | undefined) => {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString();
+};
 
 const Invoices = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
   const [emailOpen, setEmailOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
+  const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
+  const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "partial" | "unpaid">("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [editPaymentStatus, setEditPaymentStatus] = useState<"unpaid" | "partial" | "paid">("unpaid");
+  const [editPaymentMethod, setEditPaymentMethod] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editCharges, setEditCharges] = useState<Array<{ label: string; amount: string }>>([]);
+  const [editReductions, setEditReductions] = useState<Array<{ label: string; amount: string }>>([]);
   const [addChargeOpen, setAddChargeOpen] = useState(false);
-  const [selectedInvoice, setSelectedInvoice] = useState("");
-  const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<typeof mockInvoices[0] | null>(null);
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [entryMethod, setEntryMethod] = useState("manual");
-  const [chargeType, setChargeType] = useState("charge");
-  const [charges, setCharges] = useState([
-    { category: "Labor", amount: 150, quantity: 1, isInventoryItem: false },
-    { category: "Parts", amount: 100, quantity: 1, isInventoryItem: false },
-  ]);
-  const [reductions, setReductions] = useState([
-    { category: "Discount", amount: 20 },
-  ]);
-  
-  const mockInventory = [
-    { name: "Engine Oil 5W-30", unit: "Liters" },
-    { name: "Brake Pads", unit: "Sets" },
-    { name: "Air Filter", unit: "Units" },
-    { name: "Coolant", unit: "Liters" },
-    { name: "Spark Plugs", unit: "Sets" },
-  ];
-  const { toast } = useToast();
+  const [addChargeMode, setAddChargeMode] = useState<"manual" | "inventory">("manual");
+  const [addChargeLabel, setAddChargeLabel] = useState("");
+  const [addChargeAmount, setAddChargeAmount] = useState("");
+  const [selectedInventoryOption, setSelectedInventoryOption] = useState<InventoryOption | null>(null);
+  const [inventoryPickerOpen, setInventoryPickerOpen] = useState(false);
+  const [addChargeQuantity, setAddChargeQuantity] = useState("1");
+  const [addChargeRate, setAddChargeRate] = useState("");
+
+  const invoicesQuery = useQuery<InvoiceSummary[], Error>({
+    queryKey: ["invoices"],
+    queryFn: () => apiFetch<InvoiceSummary[]>("/invoices"),
+  });
+
+  const inventoryQuery = useQuery<InventoryOption[], Error>({
+    queryKey: ["inventory", "options"],
+    queryFn: () => apiFetch<InventoryOption[]>("/inventory"),
+  });
+
+  const openInvoiceDetail = (
+    invoice: InvoiceSummary,
+    options: { fromNavigation?: boolean } = {}
+  ) => {
+    setSelectedInvoiceLabel(invoice.invoice_no ?? `Invoice #${invoice.id}`);
+    setSelectedInvoiceDetail(null);
+    setDetailOpen(true);
+    setInvoiceDetailLoading(true);
+
+    apiFetch<InvoiceDetail>(`/invoices/${invoice.id}`)
+      .then((detail) => {
+        setSelectedInvoiceDetail(detail);
+      })
+      .catch((error) => {
+        toast({
+          title: "Unable to load invoice",
+          description: error.message,
+          variant: "destructive",
+        });
+        if (!options.fromNavigation) {
+          setDetailOpen(false);
+        }
+      })
+      .finally(() => {
+        setInvoiceDetailLoading(false);
+      });
+  };
+
+  const invoices = invoicesQuery.data ?? [];
+  const highlightInvoiceId = (location.state as { invoiceId?: number } | null)?.invoiceId;
 
   useEffect(() => {
-    if (!addChargeOpen) {
-      setEntryMethod("manual");
-      setChargeType("charge");
+    if (!highlightInvoiceId || invoicesQuery.isLoading) return;
+    const invoice = invoices.find((inv) => inv.id === highlightInvoiceId);
+    if (invoice) {
+      openInvoiceDetail(invoice, { fromNavigation: true });
+      navigate(".", { replace: true, state: {} });
     }
-  }, [addChargeOpen]);
+  }, [highlightInvoiceId, invoices, invoicesQuery.isLoading]);
 
-  const filteredInvoices = statusFilter === "all" 
-    ? mockInvoices 
-    : mockInvoices.filter(inv => inv.status === statusFilter);
+  const handleInvoiceRowClick = (invoice: InvoiceSummary) => {
+    openInvoiceDetail(invoice);
+  };
+
+  const openEditModal = () => {
+    if (!selectedInvoiceDetail) return;
+    const currentCharges = selectedInvoiceDetail.charges ?? [];
+    const currentReductions = selectedInvoiceDetail.reductions ?? [];
+    setEditPaymentStatus(
+      (selectedInvoiceDetail.payment_status as "unpaid" | "partial" | "paid") ?? "unpaid"
+    );
+    setEditPaymentMethod(selectedInvoiceDetail.payment_method ?? "");
+    setEditNotes(selectedInvoiceDetail.notes ?? "");
+    setEditCharges(
+      currentCharges.map((entry) => ({
+        label: entry.label ?? "",
+        amount: entry.amount?.toString() ?? "",
+      }))
+    );
+    setEditReductions(
+      currentReductions.map((entry) => ({
+        label: entry.label ?? "",
+        amount: entry.amount?.toString() ?? "",
+      }))
+    );
+    setAddChargeMode("manual");
+    setAddChargeLabel("");
+    setAddChargeAmount("");
+    setSelectedInventoryOption(null);
+    setAddChargeQuantity("1");
+    setAddChargeRate("");
+    setAddChargeOpen(false);
+    setEditOpen(true);
+  };
+
+  const updateInvoiceMutation = useMutation<
+    InvoiceDetail,
+    Error,
+    { id: number; payload: UpdateInvoicePayload }
+  >({
+    mutationFn: ({ id, payload }) =>
+      apiFetch<InvoiceDetail>(`/invoices/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (invoice) => {
+      setSelectedInvoiceDetail(invoice);
+      setSelectedInvoiceLabel(invoice.invoice_no ?? `Invoice #${invoice.id}`);
+      setEditOpen(false);
+      setDetailOpen(true);
+      setEditPaymentStatus((invoice.payment_status as "unpaid" | "partial" | "paid") ?? "unpaid");
+      setEditPaymentMethod(invoice.payment_method ?? "");
+      setEditNotes(invoice.notes ?? "");
+      setEditCharges(
+        (invoice.charges ?? []).map((entry) => ({
+          label: entry.label ?? "",
+          amount: entry.amount?.toString() ?? "",
+        }))
+      );
+      setEditReductions(
+        (invoice.reductions ?? []).map((entry) => ({
+          label: entry.label ?? "",
+          amount: entry.amount?.toString() ?? "",
+        }))
+      );
+      toast({
+        title: "Invoice updated",
+        description: `Invoice ${invoice.invoice_no ?? `#${invoice.id}`} updated successfully.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to update invoice",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteInvoiceMutation = useMutation<void, Error, { id: number; label: string }>({
+    mutationFn: ({ id }) =>
+      apiFetch(`/invoices/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_data, variables) => {
+      toast({
+        title: "Invoice deleted",
+        description: `${variables.label} has been deleted successfully.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      setDeleteOpen(false);
+      setDetailOpen(false);
+      setSelectedInvoiceDetail(null);
+      setSelectedInvoiceLabel("");
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to delete invoice",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const getStatusMeta = (status: string) => {
+    const normalized = status?.toLowerCase();
+    switch (normalized) {
+      case "paid":
+        return { label: "Paid", className: "bg-success text-success-foreground" };
+      case "partial":
+        return { label: "Partial", className: "bg-warning text-warning-foreground" };
+      case "unpaid":
+      default:
+        return { label: normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Unpaid", className: "bg-destructive text-destructive-foreground" };
+    }
+  };
+
+  const filteredInvoices = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return invoices.filter((invoice) => {
+      if (statusFilter !== "all" && invoice.payment_status.toLowerCase() !== statusFilter) {
+        return false;
+      }
+      if (!query) return true;
+      const haystack = [
+        invoice.invoice_no ?? `INV-${invoice.id}`,
+        String(invoice.id),
+        invoice.customer_name ?? "",
+        invoice.notes ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [invoices, statusFilter, searchTerm]);
+
+  const handleEdit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedInvoiceDetail) return;
+
+    const parseEntries = (
+      entries: Array<{ label: string; amount: string }>,
+      kind: "charge" | "reduction"
+    ) => {
+      const parsed: Array<{ label: string; amount: number }> = [];
+      for (const entry of entries) {
+        const label = entry.label.trim();
+        const rawAmount = entry.amount.trim();
+
+        if (!label && !rawAmount) {
+          continue;
+        }
+
+        const amount = Number(rawAmount);
+        if (!label || !Number.isFinite(amount) || amount < 0) {
+          toast({
+            title: "Incomplete entry",
+            description: `Each ${kind === "charge" ? "charge" : "reduction"} requires a label and non-negative amount.`,
+            variant: "destructive",
+          });
+          return null;
+        }
+
+        parsed.push({ label, amount });
+      }
+      return parsed;
+    };
+
+    const parsedCharges = parseEntries(editCharges, "charge");
+    if (!parsedCharges) return;
+    const parsedReductions = parseEntries(editReductions, "reduction");
+    if (!parsedReductions) return;
+
+    updateInvoiceMutation.mutate({
+      id: selectedInvoiceDetail.id,
+      payload: {
+        payment_method: editPaymentMethod.trim() ? editPaymentMethod.trim() : null,
+        payment_status: editPaymentStatus,
+        notes: editNotes.trim() ? editNotes.trim() : null,
+        charges: parsedCharges,
+        reductions: parsedReductions,
+      },
+    });
+  };
 
   const handleSendEmail = (e: React.FormEvent) => {
     e.preventDefault();
     toast({
       title: "Invoice Sent",
-      description: `Invoice ${selectedInvoice} has been sent successfully.`,
+      description: `Invoice ${selectedInvoiceLabel || ""} has been sent successfully.`,
     });
     setEmailOpen(false);
   };
 
   const handleDelete = () => {
-    toast({
-      title: "Invoice Deleted",
-      description: `Invoice ${selectedInvoiceDetail?.id} has been deleted successfully.`,
-    });
-    setDeleteOpen(false);
-    setDetailOpen(false);
+    if (!selectedInvoiceDetail) return;
+    deleteInvoiceMutation.mutate({ id: selectedInvoiceDetail.id, label: selectedInvoiceLabel });
   };
 
-  const handleEdit = (e: React.FormEvent) => {
-    e.preventDefault();
-    toast({
-      title: "Invoice Updated",
-      description: `Invoice ${selectedInvoiceDetail?.id} has been updated successfully.`,
-    });
-    setEditOpen(false);
-    setDetailOpen(false);
-  };
-
-  const handleAddCharge = (e: React.FormEvent) => {
-    e.preventDefault();
-    const formData = new FormData(e.target as HTMLFormElement);
-    
-    if (chargeType === 'charge') {
-      if (entryMethod === 'manual') {
-        const category = formData.get('category') as string;
-        const amount = parseFloat(formData.get('amount') as string);
-        setCharges([...charges, { category, amount, quantity: 1, isInventoryItem: false }]);
-      } else {
-        const inventoryItem = formData.get('inventoryItem') as string;
-        const quantity = parseFloat(formData.get('quantity') as string);
-        const amount = parseFloat(formData.get('itemCost') as string);
-        setCharges([...charges, { category: inventoryItem, amount, quantity, isInventoryItem: true }]);
-      }
-    } else {
-      const category = formData.get('category') as string;
-      const amount = parseFloat(formData.get('amount') as string);
-      setReductions([...reductions, { category, amount }]);
-    }
-    
-    toast({
-      title: chargeType === 'charge' ? "Charge Added" : "Reduction Added",
-      description: "Item has been added successfully.",
-    });
-    setAddChargeOpen(false);
-  };
-  
-  const handleSaveInvoiceChanges = () => {
-    toast({
-      title: "Invoice Saved",
-      description: "All charges and reductions have been saved successfully.",
-    });
-  };
-
-  const totalCharges = charges.reduce((sum, c) => sum + (c.amount * c.quantity), 0);
-  const totalReductions = reductions.reduce((sum, r) => sum + r.amount, 0);
-  const finalAmount = totalCharges - totalReductions;
+  const detailCharges = selectedInvoiceDetail?.charges ?? [];
+  const detailReductions = selectedInvoiceDetail?.reductions ?? [];
+  const itemsTotal = selectedInvoiceDetail
+    ? selectedInvoiceDetail.items_total ??
+      selectedInvoiceDetail.items.reduce((sum, item) => sum + item.line_total, 0)
+    : 0;
+  const extraChargesTotal =
+    selectedInvoiceDetail?.total_charges ??
+    detailCharges.reduce((sum, entry) => sum + entry.amount, 0);
+  const reductionsTotal =
+    selectedInvoiceDetail?.total_deductions ??
+    detailReductions.reduce((sum, entry) => sum + entry.amount, 0);
+  const finalAmount = selectedInvoiceDetail?.final_total ?? itemsTotal + extraChargesTotal - reductionsTotal;
+  const detailStatusMeta = selectedInvoiceDetail ? getStatusMeta(selectedInvoiceDetail.payment_status) : null;
+  const estimateAmount = selectedInvoiceDetail?.initial_amount ?? null;
+  const advanceReduction = detailReductions.find(
+    (entry) => entry.label?.toLowerCase() === "advance"
+  );
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -143,6 +412,116 @@ const Invoices = () => {
     }
   };
 
+  const resetAddChargeForm = () => {
+    setAddChargeMode("manual");
+    setAddChargeLabel("");
+    setAddChargeAmount("");
+    setSelectedInventoryOption(null);
+    setInventoryPickerOpen(false);
+    setAddChargeQuantity("1");
+    setAddChargeRate("");
+  };
+
+  useEffect(() => {
+    if (selectedInventoryOption) {
+      setAddChargeRate(
+        selectedInventoryOption.unit_cost !== null
+          ? selectedInventoryOption.unit_cost.toString()
+          : ""
+      );
+    }
+  }, [selectedInventoryOption]);
+
+  const handleAddChargeSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (addChargeMode === "manual") {
+      const label = addChargeLabel.trim();
+      const amountValue = Number(addChargeAmount);
+
+      if (!label || !Number.isFinite(amountValue) || amountValue <= 0) {
+        toast({
+          title: "Incomplete charge",
+          description: "Provide a description and a positive amount.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setEditCharges((prev) => [...prev, { label, amount: amountValue.toString() }]);
+      toast({
+        title: "Charge added",
+        description: `${label} recorded as an additional charge.`,
+      });
+      resetAddChargeForm();
+      setAddChargeOpen(false);
+      return;
+    }
+
+    const inventoryItem = selectedInventoryOption;
+    if (!inventoryItem) {
+      toast({
+        title: "Select an item",
+        description: "Choose an inventory item to add as a charge.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const quantityValue = Number(addChargeQuantity);
+    const rateValue = addChargeRate.trim().length
+      ? Number(addChargeRate)
+      : inventoryItem.unit_cost ?? 0;
+
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0 || !Number.isFinite(rateValue) || rateValue < 0) {
+      toast({
+        title: "Invalid entry",
+        description: "Provide a valid quantity and unit price.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (inventoryItem.type === "consumable") {
+      const confirmed = window.confirm(
+        `Deduct ${quantityValue} unit(s) of ${inventoryItem.name} from inventory?`
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        await apiFetch(`/inventory/${inventoryItem.id}/deduct`, {
+          method: "POST",
+          body: JSON.stringify({ quantity: quantityValue }),
+        });
+        queryClient.invalidateQueries({ queryKey: ["inventory", "options"] });
+      } catch (error) {
+        toast({
+          title: "Stock deduction failed",
+          description: error instanceof Error ? error.message : "Unable to deduct inventory.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    const lineTotal = quantityValue * rateValue;
+    const label = `${inventoryItem.name}${quantityValue > 1 ? ` (${quantityValue}×)` : ""}`;
+
+    setEditCharges((prev) => [
+      ...prev,
+      { label, amount: lineTotal.toString() },
+    ]);
+
+    toast({
+      title: "Inventory item added",
+      description: `${inventoryItem.name} added as an invoice charge.`,
+    });
+    resetAddChargeForm();
+    setAddChargeOpen(false);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -155,17 +534,22 @@ const Invoices = () => {
           <div className="flex items-center gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search invoices..." className="pl-10" />
+              <Input
+                placeholder="Search invoices..."
+                className="pl-10"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+              />
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as typeof statusFilter)}>
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="Filter by status" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="Paid">Paid</SelectItem>
-                <SelectItem value="Pending">Pending</SelectItem>
-                <SelectItem value="Overdue">Overdue</SelectItem>
+                <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="partial">Partial</SelectItem>
+                <SelectItem value="unpaid">Unpaid</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -175,82 +559,110 @@ const Invoices = () => {
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th className="p-3 text-left text-sm font-medium">Invoice ID</th>
+                  <th className="p-3 text-left text-sm font-medium">Invoice</th>
                   <th className="p-3 text-left text-sm font-medium">Customer</th>
                   <th className="p-3 text-left text-sm font-medium">Date</th>
                   <th className="p-3 text-left text-sm font-medium">Amount</th>
                   <th className="p-3 text-left text-sm font-medium">Status</th>
-                  <th className="p-3 text-left text-sm font-medium">Remarks</th>
+                  <th className="p-3 text-left text-sm font-medium">Notes</th>
                   <th className="p-3 text-left text-sm font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredInvoices.map((invoice) => (
-                  <tr 
-                    key={invoice.id} 
-                    className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
-                    onClick={() => {
-                      setSelectedInvoiceDetail(invoice);
-                      setDetailOpen(true);
-                    }}
-                  >
-                    <td className="p-3 font-medium">{invoice.id}</td>
-                    <td className="p-3">{invoice.customer}</td>
-                    <td className="p-3 text-muted-foreground">{invoice.date}</td>
-                    <td className="p-3 font-semibold">{formatCurrency(invoice.amount)}</td>
-                    <td className="p-3">
-                      <Badge className={getStatusColor(invoice.status)}>
-                        {invoice.status}
-                      </Badge>
-                    </td>
-                    <td className="p-3 text-muted-foreground text-sm max-w-[200px] truncate">{invoice.remarks}</td>
-                    <td className="p-3" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex gap-2">
-                        <Button variant="ghost" size="icon" title="View">
-                          <FileText className="h-4 w-4" />
-                        </Button>
-                        <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
-                          <DialogTrigger asChild>
-                            <Button variant="ghost" size="icon" title="Send Email" onClick={() => setSelectedInvoice(invoice.id)}>
-                              <Mail className="h-4 w-4" />
-                            </Button>
-                          </DialogTrigger>
-                          <DialogContent>
-                            <DialogHeader>
-                              <DialogTitle>Send Invoice via Email</DialogTitle>
-                              <DialogDescription>Send {invoice.id} to the customer's email address</DialogDescription>
-                            </DialogHeader>
-                            <form onSubmit={handleSendEmail} className="space-y-4">
-                              <div className="space-y-2">
-                                <Label htmlFor="email">Email Address</Label>
-                                <Input id="email" type="email" placeholder="customer@example.com" required />
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor="subject">Subject</Label>
-                                <Input id="subject" defaultValue={`Invoice ${invoice.id} from Garage`} required />
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor="message">Message (Optional)</Label>
-                                <Input id="message" placeholder="Add a custom message..." />
-                              </div>
-                              <div className="flex justify-end gap-3">
-                                <Button type="button" variant="outline" onClick={() => setEmailOpen(false)}>
-                                  Cancel
-                                </Button>
-                                <Button type="submit" className="bg-primary">
-                                  Send Invoice
-                                </Button>
-                              </div>
-                            </form>
-                          </DialogContent>
-                        </Dialog>
-                        <Button variant="ghost" size="icon" title="Download">
-                          <Download className="h-4 w-4" />
-                        </Button>
-                      </div>
+                {invoicesQuery.isLoading && (
+                  <tr>
+                    <td colSpan={7} className="p-4 text-center text-sm text-muted-foreground">
+                      Loading invoices...
                     </td>
                   </tr>
-                ))}
+                )}
+                {invoicesQuery.isError && !invoicesQuery.isLoading && (
+                  <tr>
+                    <td colSpan={7} className="p-4 text-center text-sm text-destructive">
+                      {invoicesQuery.error?.message ?? "Unable to load invoices."}
+                    </td>
+                  </tr>
+                )}
+                {!invoicesQuery.isLoading && !invoicesQuery.isError && filteredInvoices.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="p-6 text-center text-sm text-muted-foreground">
+                      No invoices found.
+                    </td>
+                  </tr>
+                )}
+                {!invoicesQuery.isLoading && !invoicesQuery.isError &&
+                  filteredInvoices.map((invoice) => {
+                    const statusMeta = getStatusMeta(invoice.payment_status);
+                    const displayId = invoice.invoice_no ?? `INV-${invoice.id}`;
+                    return (
+                      <tr
+                        key={invoice.id}
+                        className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
+                        onClick={() => handleInvoiceRowClick(invoice)}
+                      >
+                        <td className="p-3 font-semibold">{displayId}</td>
+                        <td className="p-3">{invoice.customer_name ?? "Walk-in customer"}</td>
+                        <td className="p-3 text-muted-foreground">{formatDate(invoice.invoice_date)}</td>
+                        <td className="p-3 font-semibold">{formatCurrency(invoice.final_total)}</td>
+                        <td className="p-3">
+                          <Badge className={statusMeta.className}>{statusMeta.label}</Badge>
+                        </td>
+                        <td className="p-3 text-sm text-muted-foreground max-w-[220px] truncate" title={invoice.notes ?? "—"}>
+                          {invoice.notes ?? "—"}
+                        </td>
+                        <td className="p-3" onClick={(event) => event.stopPropagation()}>
+                          <div className="flex gap-2">
+                            <Button variant="ghost" size="icon" title="View" onClick={() => handleInvoiceRowClick(invoice)}>
+                              <FileText className="h-4 w-4" />
+                            </Button>
+                            <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
+                              <DialogTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  title="Send Email"
+                                  onClick={() => setSelectedInvoiceLabel(displayId)}
+                                >
+                                  <Mail className="h-4 w-4" />
+                                </Button>
+                              </DialogTrigger>
+                              <DialogContent>
+                                <DialogHeader>
+                                  <DialogTitle>Send Invoice via Email</DialogTitle>
+                                  <DialogDescription>Send {displayId} to the customer's email address</DialogDescription>
+                                </DialogHeader>
+                                <form onSubmit={handleSendEmail} className="space-y-4">
+                                  <div className="space-y-2">
+                                    <Label htmlFor="email">Email Address</Label>
+                                    <Input id="email" type="email" placeholder="customer@example.com" required />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label htmlFor="subject">Subject</Label>
+                                    <Input id="subject" defaultValue={`Invoice ${displayId} from Garage`} required />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label htmlFor="message">Message (Optional)</Label>
+                                    <Input id="message" placeholder="Add a custom message..." />
+                                  </div>
+                                  <div className="flex justify-end gap-3">
+                                    <Button type="button" variant="outline" onClick={() => setEmailOpen(false)}>
+                                      Cancel
+                                    </Button>
+                                    <Button type="submit" className="bg-primary">
+                                      Send Invoice
+                                    </Button>
+                                  </div>
+                                </form>
+                              </DialogContent>
+                            </Dialog>
+                            <Button variant="ghost" size="icon" title="Download">
+                              <Download className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -258,295 +670,428 @@ const Invoices = () => {
       </Card>
 
       {/* Invoice Detail Modal */}
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+      <Dialog
+        open={detailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open) {
+            setSelectedInvoiceDetail(null);
+            setInvoiceDetailLoading(false);
+          }
+        }}
+      >
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Invoice</DialogTitle>
-            <DialogDescription>Invoice {selectedInvoiceDetail?.id}</DialogDescription>
+            <DialogDescription>{selectedInvoiceLabel || "Select an invoice to view details"}</DialogDescription>
           </DialogHeader>
+          {invoiceDetailLoading && (
+            <div className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+              Loading invoice details...
+            </div>
+          )}
           {selectedInvoiceDetail && (
             <div className="space-y-6">
-              {/* Invoice Header */}
-              <div className="flex justify-between items-start pb-4 border-b">
+              <div className="flex flex-col gap-4 border-b pb-4 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <h2 className="text-2xl font-bold">{selectedInvoiceDetail.id}</h2>
-                  <p className="text-muted-foreground">{selectedInvoiceDetail.date}</p>
+                  <p className="text-2xl font-bold">
+                    {selectedInvoiceDetail.invoice_no ?? `Invoice #${selectedInvoiceDetail.id}`}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Issued on {formatDate(selectedInvoiceDetail.invoice_date)}
+                  </p>
+                  {selectedInvoiceDetail.job_id && (
+                    <p className="text-sm text-muted-foreground">Linked job #{selectedInvoiceDetail.job_id}</p>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-2">
-                  <Badge className={getStatusColor(selectedInvoiceDetail.status)}>
-                    {selectedInvoiceDetail.status}
-                  </Badge>
+                  {detailStatusMeta && (
+                    <Badge className={detailStatusMeta.className}>{detailStatusMeta.label}</Badge>
+                  )}
                   <div className="text-right">
-                    <Label className="text-xs text-muted-foreground uppercase tracking-wide">Invoice total</Label>
-                    <p className="font-semibold text-lg">{formatCurrency(selectedInvoiceDetail.amount)}</p>
+                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">Invoice total</Label>
+                    <p className="text-xl font-semibold">{formatCurrency(finalAmount)}</p>
                   </div>
                 </div>
               </div>
 
-              {/* Customer Info */}
-              <div>
-                <Label className="text-muted-foreground">Bill To:</Label>
-                <p className="font-semibold text-lg">{selectedInvoiceDetail.customer}</p>
+              <div className="grid gap-4 rounded-md border p-4 md:grid-cols-2">
+                <div>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Customer</Label>
+                  <p className="font-semibold text-sm">
+                    {selectedInvoiceDetail.customer_name ?? "Walk-in customer"}
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Payment method</Label>
+                  <p className="font-semibold text-sm">
+                    {selectedInvoiceDetail.payment_method ?? "Not specified"}
+                  </p>
+                </div>
+                <div className="md:col-span-2">
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Notes</Label>
+                  <p className="rounded-md border border-muted bg-muted/30 p-3 text-sm">
+                    {selectedInvoiceDetail.notes ?? "No notes recorded."}
+                  </p>
+                </div>
               </div>
 
-              {/* Charges Section */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-semibold text-lg">Charges</h3>
-                  <Button 
-                    size="sm" 
-                    variant="outline"
-                    onClick={() => setAddChargeOpen(true)}
-                  >
-                    <Plus className="h-4 w-4 mr-1" />
-                    Add
-                  </Button>
+              {(estimateAmount || advanceReduction) && (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {estimateAmount && (
+                    <div className="rounded-md border border-muted/60 bg-muted/20 p-4">
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                        Estimated amount
+                      </Label>
+                      <p className="mt-1 text-lg font-semibold">{formatCurrency(estimateAmount)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Derived from the job estimate before work started.
+                      </p>
+                    </div>
+                  )}
+                  {advanceReduction && (
+                    <div className="rounded-md border border-muted/60 bg-muted/20 p-4">
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                        Advance received
+                      </Label>
+                      <p className="mt-1 text-lg font-semibold">{formatCurrency(advanceReduction.amount)}</p>
+                      <p className="text-xs text-muted-foreground">Already collected and deducted from the total.</p>
+                    </div>
+                  )}
                 </div>
-                <div className="border rounded-md">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b bg-muted/50">
-                        <th className="p-3 text-left text-sm font-medium">Category</th>
-                        <th className="p-3 text-right text-sm font-medium">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {charges.map((charge, idx) => (
-                        <tr key={idx} className="border-b">
-                          <td className="p-3">
-                            {charge.category}
-                            {charge.isInventoryItem && (
-                              <span className="text-xs text-muted-foreground ml-2">
-                                (Qty: {charge.quantity})
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-3 text-right">
-                            {formatCurrency(charge.amount * charge.quantity)}
-                          </td>
+              )}
+
+              {selectedInvoiceDetail.items.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold">Line items</h3>
+                    <span className="text-sm text-muted-foreground">
+                      {selectedInvoiceDetail.items.length} item{selectedInvoiceDetail.items.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="p-3 font-medium">Item</th>
+                          <th className="p-3 font-medium">Type</th>
+                          <th className="p-3 font-medium">Qty</th>
+                          <th className="p-3 font-medium">Unit price</th>
+                          <th className="p-3 font-medium">Line total</th>
                         </tr>
-                      ))}
-                      <tr className="font-semibold">
-                        <td className="p-3">Total Charges</td>
-                        <td className="p-3 text-right">{formatCurrency(totalCharges)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {selectedInvoiceDetail.items.map((item) => (
+                          <tr key={item.id} className="border-t">
+                            <td className="p-3 font-semibold">{item.item_name}</td>
+                            <td className="p-3 capitalize text-muted-foreground">{item.type}</td>
+                            <td className="p-3">{item.quantity}</td>
+                            <td className="p-3">{formatCurrency(item.unit_price)}</td>
+                            <td className="p-3 font-semibold">{formatCurrency(item.line_total)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Reductions Section */}
-              <div className="space-y-3">
-                <h3 className="font-semibold text-lg">Reductions</h3>
-                <div className="border rounded-md">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b bg-muted/50">
-                        <th className="p-3 text-left text-sm font-medium">Category</th>
-                        <th className="p-3 text-right text-sm font-medium">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reductions.map((reduction, idx) => (
-                        <tr key={idx} className="border-b">
-                          <td className="p-3">{reduction.category}</td>
-                          <td className="p-3 text-right">{formatCurrency(-reduction.amount)}</td>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-3">
+                  <h3 className="text-lg font-semibold">Additional charges</h3>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="p-3 font-medium">Category</th>
+                          <th className="p-3 font-medium text-right">Amount</th>
                         </tr>
-                      ))}
-                      <tr className="font-semibold">
-                        <td className="p-3">Total Reductions</td>
-                        <td className="p-3 text-right">{formatCurrency(-totalReductions)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {detailCharges.length === 0 && (
+                          <tr>
+                            <td colSpan={2} className="p-3 text-sm text-muted-foreground">
+                              No additional charges recorded.
+                            </td>
+                          </tr>
+                        )}
+                        {detailCharges.map((charge) => (
+                          <tr key={`${charge.label}-${charge.id ?? ""}`} className="border-t">
+                            <td className="p-3">
+                              <span className="font-medium">{charge.label}</span>
+                              {charge.label?.toLowerCase() === "initial amount" && (
+                                <span className="ml-2 text-xs text-muted-foreground">(Estimate)</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-right font-semibold">
+                              {formatCurrency(charge.amount)}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="border-t font-semibold">
+                          <td className="p-3">Total additional charges</td>
+                          <td className="p-3 text-right">{formatCurrency(extraChargesTotal)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <h3 className="text-lg font-semibold">Reductions</h3>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="p-3 font-medium">Category</th>
+                          <th className="p-3 font-medium text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detailReductions.length === 0 && (
+                          <tr>
+                            <td colSpan={2} className="p-3 text-sm text-muted-foreground">
+                              No reductions recorded.
+                            </td>
+                          </tr>
+                        )}
+                        {detailReductions.map((reduction) => (
+                          <tr key={`${reduction.label}-${reduction.id ?? ""}`} className="border-t">
+                            <td className="p-3">
+                              <span className="font-medium">{reduction.label}</span>
+                              {reduction.label?.toLowerCase() === "advance" && (
+                                <span className="ml-2 text-xs text-muted-foreground">(Advance)</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-right font-semibold">
+                              {formatCurrency(reduction.amount)}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="border-t font-semibold">
+                          <td className="p-3">Total reductions</td>
+                          <td className="p-3 text-right">{formatCurrency(reductionsTotal)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
 
-              {/* Final Amount */}
-              <div className="pt-4 border-t">
-                <div className="flex justify-between items-center text-xl font-bold">
-                  <span>Final Amount</span>
+              <div className="space-y-2 rounded-md border bg-muted/20 p-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Items total</span>
+                  <span className="font-semibold">{formatCurrency(itemsTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Additional charges</span>
+                  <span className="font-semibold">{formatCurrency(extraChargesTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Reductions</span>
+                  <span className="font-semibold">{formatCurrency(reductionsTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between border-t pt-3 text-lg font-bold">
+                  <span>Final amount</span>
                   <span>{formatCurrency(finalAmount)}</span>
                 </div>
               </div>
 
-              {/* Remarks */}
-              <div className="pt-4 border-t">
-                <Label className="text-muted-foreground">Remarks</Label>
-                <p className="mt-1">{selectedInvoiceDetail.remarks}</p>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex gap-3 pt-4 border-t">
-                <Button 
-                  variant="default"
-                  className="flex-1"
-                  onClick={handleSaveInvoiceChanges}
-                >
-                  Save Changes
-                </Button>
-                <Button 
-                  variant="outline" 
-                  className="flex-1"
+              <div className="flex flex-col gap-3 border-t pt-4 md:flex-row">
+                <Button
+                  variant="outline"
+                  className="md:flex-1"
                   onClick={() => {
                     setDetailOpen(false);
-                    setEditOpen(true);
+                    openEditModal();
                   }}
                 >
                   <Edit className="mr-2 h-4 w-4" />
                   Edit
                 </Button>
-                <Button 
-                  variant="destructive" 
-                  className="flex-1"
-                  onClick={() => setDeleteOpen(true)}
-                >
+                <Button variant="destructive" className="md:flex-1" onClick={() => setDeleteOpen(true)}>
                   Delete
                 </Button>
               </div>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Add Charge/Reduction Dialog */}
-      <Dialog open={addChargeOpen} onOpenChange={setAddChargeOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Add Charge or Reduction</DialogTitle>
-            <DialogDescription>Add a new item to the invoice</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleAddCharge} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="chargeType">Type</Label>
-              <Select name="chargeType" value={chargeType} onValueChange={(value) => {
-                setChargeType(value);
-                if (value === "reduction") setEntryMethod("manual");
-              }}>
-                <SelectTrigger id="chargeType">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="charge">Charge</SelectItem>
-                  <SelectItem value="reduction">Reduction</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            
-            <div className="space-y-4 p-4 border rounded-md">
-              {chargeType === "charge" && (
-                <>
-                  <Label>Entry Method</Label>
-                  <Select name="entryType" value={entryMethod} onValueChange={setEntryMethod}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="manual">Manual Entry</SelectItem>
-                      <SelectItem value="inventory">From Inventory</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </>
-              )}
-              
-              {entryMethod === "manual" ? (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="category">Category</Label>
-                    <Input id="category" name="category" placeholder="e.g., Labor, Parts, Discount" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="amount">Amount (LKR)</Label>
-                    <Input id="amount" name="amount" type="number" step="0.01" placeholder="0.00" />
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="inventoryItem">Select Item</Label>
-                    <Select name="inventoryItem">
-                      <SelectTrigger id="inventoryItem">
-                        <SelectValue placeholder="Choose inventory item" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {mockInventory.map((item, idx) => (
-                          <SelectItem key={idx} value={item.name}>
-                            {item.name} ({item.unit})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="quantity">Quantity Used</Label>
-                    <Input id="quantity" name="quantity" type="number" step="0.01" placeholder="0" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="itemCost">Cost per Unit (LKR)</Label>
-                    <Input id="itemCost" name="itemCost" type="number" step="0.01" placeholder="0.00" />
-                  </div>
-                </div>
-              )}
-            </div>
-            
-            <div className="flex justify-end gap-3">
-              <Button type="button" variant="outline" onClick={() => setAddChargeOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" className="bg-primary">
-                Add
-              </Button>
-            </div>
-          </form>
+          {!selectedInvoiceDetail && !invoiceDetailLoading && (
+            <p className="text-sm text-muted-foreground">Select an invoice to view its details.</p>
+          )}
         </DialogContent>
       </Dialog>
 
       {/* Edit Invoice Modal */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Invoice</DialogTitle>
-            <DialogDescription>Update invoice details for {selectedInvoiceDetail?.id}</DialogDescription>
+            <DialogDescription>
+              Update invoice details for {selectedInvoiceDetail?.invoice_no ?? `#${selectedInvoiceDetail?.id}`}
+            </DialogDescription>
           </DialogHeader>
           {selectedInvoiceDetail && (
-            <form onSubmit={handleEdit} className="space-y-4">
+            <form onSubmit={handleEdit} className="space-y-6">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="editCustomer">Customer</Label>
-                  <Input id="editCustomer" defaultValue={selectedInvoiceDetail.customer} disabled />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="editDate">Date</Label>
-                  <Input id="editDate" type="date" defaultValue={selectedInvoiceDetail.date} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="editAmount">Amount</Label>
-                  <Input id="editAmount" defaultValue={selectedInvoiceDetail.amount} disabled />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="editStatus">Status</Label>
-                  <Select defaultValue={selectedInvoiceDetail.status}>
+                  <Label htmlFor="editStatus">Payment status</Label>
+                  <Select
+                    value={editPaymentStatus}
+                    onValueChange={(value) => setEditPaymentStatus(value as "unpaid" | "partial" | "paid")}
+                  >
                     <SelectTrigger id="editStatus">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Paid">Paid</SelectItem>
-                      <SelectItem value="Pending">Pending</SelectItem>
-                      <SelectItem value="Overdue">Overdue</SelectItem>
+                      <SelectItem value="unpaid">Unpaid</SelectItem>
+                      <SelectItem value="partial">Partial</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2 col-span-2">
-                  <Label htmlFor="editRemarks">Remarks</Label>
-                  <Textarea id="editRemarks" defaultValue={selectedInvoiceDetail.remarks} rows={3} />
+                <div className="space-y-2">
+                  <Label htmlFor="editMethod">Payment method</Label>
+                  <Input
+                    id="editMethod"
+                    placeholder="e.g., Cash, Bank transfer, Card"
+                    value={editPaymentMethod}
+                    onChange={(event) => setEditPaymentMethod(event.target.value)}
+                  />
                 </div>
               </div>
-              <div className="flex justify-end gap-3 pt-4">
+
+              <div className="space-y-2">
+                <Label htmlFor="editNotes">Remarks</Label>
+                <Textarea
+                  id="editNotes"
+                  rows={4}
+                  placeholder="Optional notes visible on the invoice"
+                  value={editNotes}
+                  onChange={(event) => setEditNotes(event.target.value)}
+                />
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-base font-semibold">Additional charges</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      resetAddChargeForm();
+                      setAddChargeMode("manual");
+                      setAddChargeOpen(true);
+                    }}
+                  >
+                    Add charge
+                  </Button>
+                </div>
+                {editCharges.length === 0 && (
+                  <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+                    No extra charges yet. Use “Add charge” to include labour, parts, or other costs.
+                  </p>
+                )}
+                {editCharges.map((entry, index) => (
+                  <div
+                    key={`charge-${index}`}
+                    className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]"
+                  >
+                    <Input
+                      placeholder="Charge category"
+                      value={entry.label}
+                      onChange={(event) => {
+                        const next = [...editCharges];
+                        next[index] = { ...next[index], label: event.target.value };
+                        setEditCharges(next);
+                      }}
+                    />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={entry.amount}
+                      onChange={(event) => {
+                        const next = [...editCharges];
+                        next[index] = { ...next[index], amount: event.target.value };
+                        setEditCharges(next);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="justify-self-end text-muted-foreground"
+                      onClick={() =>
+                        setEditCharges((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
+                      }
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-base font-semibold">Reductions</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditReductions((prev) => [...prev, { label: "", amount: "" }])}
+                  >
+                    Add reduction
+                  </Button>
+                </div>
+                {editReductions.length === 0 && (
+                  <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+                    No reductions yet. Add discounts or advances collected here.
+                  </p>
+                )}
+                {editReductions.map((entry, index) => (
+                  <div
+                    key={`reduction-${index}`}
+                    className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]"
+                  >
+                    <Input
+                      placeholder="Reduction category"
+                      value={entry.label}
+                      onChange={(event) => {
+                        const next = [...editReductions];
+                        next[index] = { ...next[index], label: event.target.value };
+                        setEditReductions(next);
+                      }}
+                    />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={entry.amount}
+                      onChange={(event) => {
+                        const next = [...editReductions];
+                        next[index] = { ...next[index], amount: event.target.value };
+                        setEditReductions(next);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="justify-self-end text-muted-foreground"
+                      onClick={() =>
+                        setEditReductions((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
+                      }
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-primary">
-                  Save Changes
+                <Button type="submit" disabled={updateInvoiceMutation.isPending}>
+                  {updateInvoiceMutation.isPending ? "Saving..." : "Save invoice"}
                 </Button>
               </div>
             </form>
@@ -558,19 +1103,178 @@ const Invoices = () => {
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Deletion</DialogTitle>
+            <DialogTitle>Delete invoice</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete invoice {selectedInvoiceDetail?.id}? This action cannot be undone.
+              This will remove {selectedInvoiceLabel || "this invoice"} permanently. Any consumable items linked to
+              the invoice will be returned to inventory automatically.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+          <p className="text-sm text-muted-foreground">
+            Are you sure you want to continue?
+          </p>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteOpen(false)}
+              disabled={deleteInvoiceMutation.isPending}
+            >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              Delete
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleteInvoiceMutation.isPending}
+            >
+              {deleteInvoiceMutation.isPending ? "Deleting..." : "Delete"}
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Charge / Item Dialog */}
+      <Dialog
+        open={addChargeOpen}
+        onOpenChange={(open) => {
+          setAddChargeOpen(open);
+          if (!open) {
+            resetAddChargeForm();
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add charge or item</DialogTitle>
+            <DialogDescription>
+              Record a manual service charge or pull an item from inventory to include on the invoice.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleAddChargeSubmit} className="space-y-6">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={addChargeMode === "manual" ? "default" : "outline"}
+                onClick={() => {
+                  setAddChargeMode("manual");
+                  setSelectedInventoryOption(null);
+                }}
+              >
+                Manual entry
+              </Button>
+              <Button
+                type="button"
+                variant={addChargeMode === "inventory" ? "default" : "outline"}
+                onClick={() => setAddChargeMode("inventory")}
+              >
+                From inventory
+              </Button>
+            </div>
+
+            {addChargeMode === "manual" ? (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="manualLabel">Description</Label>
+                  <Input
+                    id="manualLabel"
+                    placeholder="e.g., Labour, Diagnostic fee"
+                    value={addChargeLabel}
+                    onChange={(event) => setAddChargeLabel(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="manualAmount">Amount (LKR)</Label>
+                  <Input
+                    id="manualAmount"
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={addChargeAmount}
+                    onChange={(event) => setAddChargeAmount(event.target.value)}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Inventory item</Label>
+                  <Popover open={inventoryPickerOpen} onOpenChange={setInventoryPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button type="button" variant="outline" className="w-full justify-between">
+                        {selectedInventoryOption ? selectedInventoryOption.name : "Select item"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[320px] p-0">
+                      <Command>
+                        <CommandInput placeholder="Search inventory..." />
+                        <CommandList>
+                          <CommandEmpty>No items found.</CommandEmpty>
+                          <CommandGroup>
+                            {(inventoryQuery.data ?? []).map((item) => (
+                              <CommandItem
+                                key={item.id}
+                                value={`${item.name} ${item.type}`}
+                                onSelect={() => {
+                                  setSelectedInventoryOption(item);
+                                  setInventoryPickerOpen(false);
+                                }}
+                              >
+                                <div className="flex flex-col">
+                                  <span className="font-medium">{item.name}</span>
+                                  <span className="text-xs text-muted-foreground capitalize">
+                                    {item.type} • In stock: {item.quantity}
+                                  </span>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                  {inventoryQuery.isError && (
+                    <p className="text-xs text-destructive">
+                      {inventoryQuery.error?.message ?? "Unable to load inventory."}
+                    </p>
+                  )}
+                </div>
+
+                {selectedInventoryOption && (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="inventoryQuantity">Quantity</Label>
+                      <Input
+                        id="inventoryQuantity"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={addChargeQuantity}
+                        onChange={(event) => setAddChargeQuantity(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="inventoryRate">Unit price (LKR)</Label>
+                      <Input
+                        id="inventoryRate"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={addChargeRate}
+                        onChange={(event) => setAddChargeRate(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="outline" onClick={() => setAddChargeOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit">
+                {addChargeMode === "manual" ? "Add charge" : "Add inventory item"}
+              </Button>
+            </div>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

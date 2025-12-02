@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -83,6 +84,30 @@ type JobSummary = {
     name: string;
     status: TechnicianStatus;
   }>;
+  invoice_created?: number;
+};
+
+type JobItemDetail = {
+  id: number;
+  job_id: number;
+  inventory_item_id: number | null;
+  item_name: string;
+  item_type: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+};
+
+type JobInvoiceSummary = {
+  id: number;
+  invoice_no: string | null;
+  final_total: number | null;
+  payment_status: string;
+};
+
+type JobDetail = JobSummary & {
+  items?: JobItemDetail[];
+  invoice?: JobInvoiceSummary | null;
 };
 
 type CreateJobPayload = {
@@ -151,6 +176,8 @@ const Jobs = () => {
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [vehiclePromptAcknowledged, setVehiclePromptAcknowledged] = useState(false);
   const [selectedJob, setSelectedJob] = useState<JobSummary | null>(null);
+  const [selectedJobDetail, setSelectedJobDetail] = useState<JobDetail | null>(null);
+  const [jobDetailLoading, setJobDetailLoading] = useState(false);
 
   const [vehicleMake, setVehicleMake] = useState("");
   const [vehicleModel, setVehicleModel] = useState("");
@@ -169,6 +196,7 @@ const Jobs = () => {
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const {
     data: customersData,
@@ -419,6 +447,9 @@ const Jobs = () => {
     });
   }, [jobs, searchTerm, statusFilter]);
 
+  const jobDetail = selectedJobDetail ?? (selectedJob as JobDetail | null);
+  const jobHasInvoice = Boolean(jobDetail?.invoice_created || jobDetail?.invoice);
+
   const updateJobMutation = useMutation<
     JobSummary,
     Error,
@@ -429,6 +460,7 @@ const Jobs = () => {
         notes: string | null;
         initial_amount: number | null;
         advance_amount: number | null;
+        create_invoice?: boolean;
       };
     }
   >({
@@ -444,6 +476,7 @@ const Jobs = () => {
         description: `Job #${job.id} updated successfully.`,
       });
       setSelectedJob(job);
+      setSelectedJobDetail(job as JobDetail);
       setJobEditOpen(false);
       setJobDetailOpen(true);
     },
@@ -471,6 +504,7 @@ const Jobs = () => {
       setJobDetailOpen(false);
       setJobEditOpen(false);
       setSelectedJob(null);
+      setSelectedJobDetail(null);
     },
     onError: (error) => {
       toast({
@@ -481,9 +515,63 @@ const Jobs = () => {
     },
   });
 
+  const createInvoiceMutation = useMutation<
+    JobDetail & { invoice?: JobInvoiceSummary | null },
+    Error,
+    { id: number; payload: { job_status: JobStatus; notes: string | null; initial_amount: number | null; advance_amount: number | null; create_invoice: true } }
+  >({
+    mutationFn: ({ id, payload }) =>
+      apiFetch<JobDetail & { invoice?: JobInvoiceSummary | null }>(`/jobs/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (job) => {
+      queryClient.invalidateQueries({ queryKey: JOBS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      setSelectedJob(job);
+      setSelectedJobDetail(job);
+      setJobDetailOpen(false);
+      toast({
+        title: "Invoice created",
+        description: `Invoice generated for job #${job.id}.`,
+      });
+      const invoiceId = job.invoice?.id;
+      if (invoiceId) {
+        navigate("/invoices", { state: { invoiceId } });
+      } else {
+        navigate("/invoices");
+      }
+    },
+    onError: (error) => {
+      toast({
+        title: "Unable to create invoice",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleJobRowClick = (job: JobSummary) => {
     setSelectedJob(job);
     setJobDetailOpen(true);
+    setJobDetailLoading(true);
+    setSelectedJobDetail(null);
+
+    apiFetch<JobDetail>(`/jobs/${job.id}`)
+      .then((detail) => {
+        setSelectedJobDetail(detail);
+      })
+      .catch((error) => {
+        toast({
+          title: "Unable to load job",
+          description: error.message,
+          variant: "destructive",
+        });
+        setJobDetailOpen(false);
+      })
+      .finally(() => {
+        setJobDetailLoading(false);
+      });
   };
 
   const handleEditJobSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -540,6 +628,38 @@ const Jobs = () => {
   const handleDeleteJob = () => {
     if (!selectedJob) return;
     deleteJobMutation.mutate(selectedJob.id);
+  };
+
+  const handleCreateInvoiceFromJob = () => {
+    const baseJob = selectedJobDetail ?? selectedJob;
+    if (!baseJob) {
+      toast({
+        title: "No job selected",
+        description: "Select a job to create an invoice.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (baseJob.job_status !== "Completed") {
+      toast({
+        title: "Job not completed",
+        description: "Complete the job before generating an invoice.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    createInvoiceMutation.mutate({
+      id: baseJob.id,
+      payload: {
+        job_status: baseJob.job_status,
+        notes: baseJob.notes ?? null,
+        initial_amount: baseJob.initial_amount ?? null,
+        advance_amount: baseJob.advance_amount ?? null,
+        create_invoice: true,
+      },
+    });
   };
 
   return (
@@ -781,7 +901,7 @@ const Jobs = () => {
 
       <Card>
         <CardHeader>
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:gap-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -879,58 +999,64 @@ const Jobs = () => {
           setJobDetailOpen(open);
           if (!open && !jobEditOpen && !jobDeleteOpen) {
             setSelectedJob(null);
+            setSelectedJobDetail(null);
           }
         }}
       >
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Job details</DialogTitle>
             <DialogDescription>
               {selectedJob ? `Full information for job #${selectedJob.id}` : "Select a job to view details"}
             </DialogDescription>
           </DialogHeader>
-          {selectedJob && (
+          {jobDetailLoading && (
+            <div className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+              Loading job details...
+            </div>
+          )}
+          {jobDetail && (
             <div className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <Label className="text-muted-foreground">Job #</Label>
-                  <p className="font-semibold text-lg">#{selectedJob.id}</p>
+                  <p className="font-semibold text-lg">#{jobDetail.id}</p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Status</Label>
                   <div className="mt-1">
-                    <Badge className={STATUS_BADGE_STYLES[selectedJob.job_status]}>
-                      {selectedJob.job_status}
+                    <Badge className={STATUS_BADGE_STYLES[jobDetail.job_status]}>
+                      {jobDetail.job_status}
                     </Badge>
                   </div>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Customer</Label>
                   <p className="font-semibold">
-                    {selectedJob.customer_name ?? `Customer #${selectedJob.customer_id}`}
+                    {jobDetail.customer_name ?? `Customer #${jobDetail.customer_id}`}
                   </p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Created</Label>
-                  <p className="font-semibold">{formatDateTime(selectedJob.created_at)}</p>
+                  <p className="font-semibold">{formatDateTime(jobDetail.created_at)}</p>
                 </div>
                 <div className="md:col-span-2">
                   <Label className="text-muted-foreground">Vehicle</Label>
-                  <p className="font-semibold">{formatVehicle(selectedJob)}</p>
+                  <p className="font-semibold">{formatVehicle(jobDetail)}</p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Estimate</Label>
-                  <p className="font-semibold">{formatCurrency(selectedJob.initial_amount)}</p>
+                  <p className="font-semibold">{formatCurrency(jobDetail.initial_amount)}</p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Advance paid</Label>
-                  <p className="font-semibold">{formatCurrency(selectedJob.advance_amount)}</p>
+                  <p className="font-semibold">{formatCurrency(jobDetail.advance_amount)}</p>
                 </div>
                 <div className="md:col-span-2">
                   <Label className="text-muted-foreground">Technicians</Label>
                   <p className="font-semibold">
-                    {selectedJob.technicians.length
-                      ? selectedJob.technicians.map((tech) => tech.name).join(", ")
+                    {jobDetail.technicians.length
+                      ? jobDetail.technicians.map((tech) => tech.name).join(", ")
                       : "No technicians assigned"}
                   </p>
                 </div>
@@ -938,19 +1064,69 @@ const Jobs = () => {
               <div className="space-y-2">
                 <Label className="text-muted-foreground">Description</Label>
                 <p className="rounded-md border border-muted bg-muted/30 p-3 text-sm leading-relaxed">
-                  {selectedJob.description ?? "No description provided."}
+                  {jobDetail.description ?? "No description provided."}
                 </p>
               </div>
               <div className="space-y-2">
                 <Label className="text-muted-foreground">Notes</Label>
                 <p className="rounded-md border border-muted bg-muted/30 p-3 text-sm leading-relaxed">
-                  {selectedJob.notes ?? "No notes recorded."}
+                  {jobDetail.notes ?? "No notes recorded."}
                 </p>
               </div>
-              <div className="flex gap-3 border-t pt-4">
+              {jobDetail.items && jobDetail.items.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Line items</Label>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="p-3 font-medium">Item</th>
+                          <th className="p-3 font-medium">Qty</th>
+                          <th className="p-3 font-medium">Unit price</th>
+                          <th className="p-3 font-medium">Line total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {jobDetail.items.map((item) => (
+                          <tr key={item.id} className="border-t">
+                            <td className="p-3">
+                              <span className="font-medium">{item.item_name}</span>
+                              <span className="block text-xs text-muted-foreground capitalize">
+                                {item.item_type}
+                              </span>
+                            </td>
+                            <td className="p-3">{item.quantity}</td>
+                            <td className="p-3">{formatCurrency(item.unit_price)}</td>
+                            <td className="p-3 font-semibold">{formatCurrency(item.line_total)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {jobHasInvoice && jobDetail.invoice && (
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Invoice</Label>
+                  <div className="rounded-md border border-muted bg-muted/30 p-3 text-sm">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <p className="font-semibold">
+                        {jobDetail.invoice.invoice_no ?? `Invoice #${jobDetail.invoice.id}`}
+                      </p>
+                      <Badge variant="secondary" className="capitalize">
+                        {jobDetail.invoice.payment_status}
+                      </Badge>
+                    </div>
+                    <p className="mt-2 text-base font-bold">
+                      {formatCurrency(jobDetail.invoice.final_total)}
+                    </p>
+                  </div>
+                </div>
+              )}
+              <div className="flex flex-col gap-2 border-t pt-4 md:flex-row">
                 <Button
                   variant="outline"
-                  className="flex-1"
+                  className="md:flex-1"
                   onClick={() => {
                     setJobDetailOpen(false);
                     setJobEditOpen(true);
@@ -958,9 +1134,34 @@ const Jobs = () => {
                 >
                   Edit
                 </Button>
+                {jobDetail.job_status === "Completed" && (
+                  jobHasInvoice ? (
+                    <Button
+                      variant="secondary"
+                      className="md:flex-1"
+                      onClick={() =>
+                        navigate("/invoices", {
+                          state: jobDetail.invoice?.id
+                            ? { invoiceId: jobDetail.invoice.id }
+                            : undefined,
+                        })
+                      }
+                    >
+                      View Invoice
+                    </Button>
+                  ) : (
+                    <Button
+                      className="md:flex-1"
+                      onClick={handleCreateInvoiceFromJob}
+                      disabled={createInvoiceMutation.isPending}
+                    >
+                      {createInvoiceMutation.isPending ? "Creating Invoice..." : "Create Invoice"}
+                    </Button>
+                  )
+                )}
                 <Button
                   variant="destructive"
-                  className="flex-1"
+                  className="md:flex-1"
                   onClick={() => {
                     setJobDetailOpen(false);
                     setJobDeleteOpen(true);
@@ -970,6 +1171,9 @@ const Jobs = () => {
                 </Button>
               </div>
             </div>
+          )}
+          {!jobDetail && !jobDetailLoading && (
+            <p className="text-sm text-muted-foreground">Select a job to view details.</p>
           )}
         </DialogContent>
       </Dialog>
