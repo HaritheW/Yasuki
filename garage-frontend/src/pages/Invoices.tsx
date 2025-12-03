@@ -149,7 +149,9 @@ const Invoices = () => {
   const [editMethodCustom, setEditMethodCustom] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editCharges, setEditCharges] = useState<Array<{ label: string; amount: string }>>([]);
-  const [editReductions, setEditReductions] = useState<Array<{ label: string; amount: string }>>([]);
+  const [editReductions, setEditReductions] = useState<
+    Array<{ label: string; amount: string; percentage?: string; appliedBase?: string }>
+  >([]);
   const [addChargeOpen, setAddChargeOpen] = useState(false);
   const [addChargeMode, setAddChargeMode] = useState<"manual" | "inventory">("manual");
   const [addChargeLabel, setAddChargeLabel] = useState("");
@@ -161,6 +163,11 @@ const Invoices = () => {
   const [pendingInventoryCharge, setPendingInventoryCharge] = useState<PendingInventoryCharge | null>(null);
   const [confirmDeductOpen, setConfirmDeductOpen] = useState(false);
   const [deductInventoryLoading, setDeductInventoryLoading] = useState(false);
+  const [addReductionOpen, setAddReductionOpen] = useState(false);
+  const [reductionMode, setReductionMode] = useState<"manual" | "percentage">("manual");
+  const [reductionLabel, setReductionLabel] = useState("");
+  const [reductionAmount, setReductionAmount] = useState("");
+  const [reductionPercentage, setReductionPercentage] = useState("");
 
   const invoicesQuery = useQuery<InvoiceSummary[], Error>({
     queryKey: ["invoices"],
@@ -229,7 +236,7 @@ const Invoices = () => {
         setPreviewDetail(detail);
       })
       .catch((error) => {
-        toast({
+    toast({
           title: "Unable to load invoice preview",
           description: error.message,
           variant: "destructive",
@@ -649,6 +656,101 @@ const Invoices = () => {
     });
   };
 
+  const resetReductionForm = () => {
+    setReductionMode("manual");
+    setReductionLabel("");
+    setReductionAmount("");
+    setReductionPercentage("");
+  };
+
+  const handleAddReductionSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!selectedInvoiceDetail) return;
+
+    if (reductionMode === "manual") {
+      const label = reductionLabel.trim();
+      const amountValue = Number(reductionAmount);
+
+      if (!label || !Number.isFinite(amountValue) || amountValue < 0) {
+        toast({
+          title: "Invalid reduction",
+          description: "Provide a description and a non-negative amount.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setEditReductions((prev) => [...prev, { label, amount: amountValue.toString() }]);
+      toast({
+        title: "Reduction added",
+        description: `${label} recorded as a reduction.`,
+      });
+      resetReductionForm();
+      setAddReductionOpen(false);
+      return;
+    }
+
+    const percentageValue = Number(reductionPercentage);
+    if (!Number.isFinite(percentageValue) || percentageValue <= 0 || percentageValue > 100) {
+      toast({
+        title: "Invalid percentage",
+        description: "Enter a percentage between 0 and 100.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const baseLabel = reductionLabel.trim();
+
+    const itemsBase = (selectedInvoiceDetail.items ?? []).reduce((sum, item) => {
+      return sum + (Number(item.line_total ?? 0) || 0);
+    }, 0);
+
+    const chargesBase = editCharges.reduce((sum, entry) => {
+      const numeric = Number(entry.amount ?? "");
+      return sum + (Number.isFinite(numeric) ? numeric : 0);
+    }, 0);
+
+    const baseTotal = Number((itemsBase + chargesBase).toFixed(2));
+
+    if (baseTotal <= 0) {
+      toast({
+        title: "No billable items",
+        description: "Add line items or charges before applying a percentage discount.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const amount = Number(((baseTotal * percentageValue) / 100).toFixed(2));
+
+    const labelWithPercent = baseLabel
+      ? baseLabel.includes("%")
+        ? baseLabel
+        : `${baseLabel} (${percentageValue}% off)`
+      : `${percentageValue}% discount`;
+
+    setEditReductions((prev) => [
+      ...prev,
+      {
+        label: labelWithPercent,
+        amount: amount.toString(),
+        percentage: percentageValue.toString(),
+        appliedBase: baseTotal.toString(),
+      } as any,
+    ]);
+
+    toast({
+      title: "Discount added",
+      description: `${
+        labelWithPercent || `${percentageValue}% discount`
+      } applied (${formatCurrency(amount)} off).`,
+    });
+    resetReductionForm();
+    setAddReductionOpen(false);
+  };
+
   const handleCancelInventoryDeduction = () => {
     if (deductInventoryLoading) return;
     setConfirmDeductOpen(false);
@@ -898,7 +1000,7 @@ const Invoices = () => {
               </div>
 
               <div className="grid gap-4 rounded-md border p-4 md:grid-cols-2">
-                <div>
+              <div>
                   <Label className="text-xs uppercase tracking-wide text-muted-foreground">Customer</Label>
                   <p className="font-semibold text-sm">
                     {selectedInvoiceDetail.customer_name ?? "Walk-in customer"}
@@ -944,13 +1046,13 @@ const Invoices = () => {
               )}
 
               {selectedInvoiceDetail.items.length > 0 && (
-                <div className="space-y-3">
+              <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold">Line items</h3>
                     <span className="text-sm text-muted-foreground">
                       {selectedInvoiceDetail.items.length} item{selectedInvoiceDetail.items.length === 1 ? "" : "s"}
                     </span>
-                  </div>
+                </div>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
                       <thead className="bg-muted/40 text-left">
@@ -960,9 +1062,9 @@ const Invoices = () => {
                           <th className="p-3 font-medium">Qty</th>
                           <th className="p-3 font-medium">Unit price</th>
                           <th className="p-3 font-medium">Line total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                      </tr>
+                    </thead>
+                    <tbody>
                         {selectedInvoiceDetail.items.map((item) => (
                           <tr key={item.id} className="border-t">
                             <td className="p-3 font-semibold">{item.item_name}</td>
@@ -999,26 +1101,26 @@ const Invoices = () => {
                         )}
                         {detailCharges.map((charge) => (
                           <tr key={`${charge.label}-${charge.id ?? ""}`} className="border-t">
-                            <td className="p-3">
+                          <td className="p-3">
                               <span className="font-medium">{charge.label}</span>
                               {charge.label?.toLowerCase() === "initial amount" && (
                                 <span className="ml-2 text-xs text-muted-foreground">(Estimate)</span>
-                              )}
-                            </td>
+                            )}
+                          </td>
                             <td className="p-3 text-right font-semibold">
                               {formatCurrency(charge.amount)}
-                            </td>
-                          </tr>
-                        ))}
+                          </td>
+                        </tr>
+                      ))}
                         <tr className="border-t font-semibold">
                           <td className="p-3">Total charges</td>
                           <td className="p-3 text-right">{formatCurrency(chargesTotal)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
-                <div className="space-y-3">
+              </div>
+              <div className="space-y-3">
                   <h3 className="text-lg font-semibold">Reductions</h3>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
@@ -1026,9 +1128,9 @@ const Invoices = () => {
                         <tr>
                           <th className="p-3 font-medium">Category</th>
                           <th className="p-3 font-medium text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                      </tr>
+                    </thead>
+                    <tbody>
                         {detailReductions.length === 0 && (
                           <tr>
                             <td colSpan={2} className="p-3 text-sm text-muted-foreground">
@@ -1047,14 +1149,14 @@ const Invoices = () => {
                             <td className="p-3 text-right font-semibold">
                               {formatCurrency(reduction.amount)}
                             </td>
-                          </tr>
-                        ))}
+                        </tr>
+                      ))}
                         <tr className="border-t font-semibold">
                           <td className="p-3">Total reductions</td>
                           <td className="p-3 text-right">{formatCurrency(reductionsTotal)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                      </tr>
+                    </tbody>
+                  </table>
                   </div>
                 </div>
               </div>
@@ -1067,7 +1169,7 @@ const Invoices = () => {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Reductions</span>
                   <span className="font-semibold">{formatCurrency(reductionsTotal)}</span>
-                </div>
+              </div>
                 <div className="flex items-center justify-between border-t pt-3 text-lg font-bold">
                   <span>Final amount</span>
                   <span>{formatCurrency(finalAmount)}</span>
@@ -1075,8 +1177,8 @@ const Invoices = () => {
               </div>
 
               <div className="flex flex-col gap-3 border-t pt-4 md:flex-row">
-                <Button
-                  variant="outline"
+                <Button 
+                  variant="outline" 
                   className="md:flex-1"
                   onClick={() => {
                     setDetailOpen(false);
@@ -1137,8 +1239,8 @@ const Invoices = () => {
                     placeholder="Enter payment method"
                     idPrefix="invoice-edit-method"
                   />
-              </div>
-
+            </div>
+            
                   <div className="space-y-2">
                 <Label htmlFor="editNotes">Remarks</Label>
                 <Textarea
@@ -1217,7 +1319,10 @@ const Invoices = () => {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => setEditReductions((prev) => [...prev, { label: "", amount: "" }])}
+                    onClick={() => {
+                      resetReductionForm();
+                      setAddReductionOpen(true);
+                    }}
                   >
                     Add reduction
                   </Button>
@@ -1232,26 +1337,20 @@ const Invoices = () => {
                     key={`reduction-${index}`}
                     className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]"
                   >
-                    <Input
-                      placeholder="Reduction category"
-                      value={entry.label}
-                      onChange={(event) => {
-                        const next = [...editReductions];
-                        next[index] = { ...next[index], label: event.target.value };
-                        setEditReductions(next);
-                      }}
-                    />
-                    <Input
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={entry.amount}
-                      onChange={(event) => {
-                        const next = [...editReductions];
-                        next[index] = { ...next[index], amount: event.target.value };
-                        setEditReductions(next);
-                      }}
-                    />
+                    <div className="space-y-1">
+                      <p className="rounded-md border border-dashed border-muted/80 bg-muted/20 px-3 py-2 text-sm font-medium text-foreground">
+                        {entry.label || "Reduction"}
+                        {entry.percentage && (
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            ({Number(entry.percentage)}% of{" "}
+                            {formatCurrency(Number(entry.appliedBase ?? 0))})
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-dashed border-muted/80 bg-muted/20 px-3 py-2 text-right text-sm font-semibold text-foreground">
+                      {formatCurrency(Number(entry.amount || 0))}
+                    </div>
                     <Button
                       type="button"
                       variant="ghost"
@@ -1591,8 +1690,8 @@ const Invoices = () => {
             </div>
 
             {addChargeMode === "manual" ? (
-              <div className="space-y-4">
-                <div className="space-y-2">
+                <div className="space-y-4">
+                  <div className="space-y-2">
                   <Label htmlFor="manualLabel">Description</Label>
                   <Input
                     id="manualLabel"
@@ -1600,8 +1699,8 @@ const Invoices = () => {
                     value={addChargeLabel}
                     onChange={(event) => setAddChargeLabel(event.target.value)}
                   />
-                </div>
-                <div className="space-y-2">
+                  </div>
+                  <div className="space-y-2">
                   <Label htmlFor="manualAmount">Amount (LKR)</Label>
                   <Input
                     id="manualAmount"
@@ -1611,11 +1710,11 @@ const Invoices = () => {
                     value={addChargeAmount}
                     onChange={(event) => setAddChargeAmount(event.target.value)}
                   />
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="space-y-2">
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-2">
                   <Label>Inventory item</Label>
                   <Popover open={inventoryPickerOpen} onOpenChange={setInventoryPickerOpen}>
                     <PopoverTrigger asChild>
@@ -1656,11 +1755,11 @@ const Invoices = () => {
                       {inventoryQuery.error?.message ?? "Unable to load inventory."}
                     </p>
                   )}
-                </div>
+                  </div>
 
                 {selectedInventoryOption && (
                   <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
+                  <div className="space-y-2">
                       <Label htmlFor="inventoryQuantity">Quantity</Label>
                       <Input
                         id="inventoryQuantity"
@@ -1670,8 +1769,8 @@ const Invoices = () => {
                         value={addChargeQuantity}
                         onChange={(event) => setAddChargeQuantity(event.target.value)}
                       />
-                </div>
-                    <div className="space-y-2">
+                  </div>
+                  <div className="space-y-2">
                       <Label htmlFor="inventoryRate">Unit price (LKR)</Label>
                       <Input
                         id="inventoryRate"
@@ -1681,20 +1780,20 @@ const Invoices = () => {
                         value={addChargeRate}
                         onChange={(event) => setAddChargeRate(event.target.value)}
                       />
+                  </div>
                 </div>
-              </div>
-                )}
-              </div>
+              )}
+            </div>
             )}
-
-          <div className="flex justify-end gap-3">
+            
+            <div className="flex justify-end gap-3">
               <Button type="button" variant="outline" onClick={() => setAddChargeOpen(false)}>
-              Cancel
-            </Button>
+                Cancel
+              </Button>
               <Button type="submit">
                 {addChargeMode === "manual" ? "Add charge" : "Add inventory item"}
-            </Button>
-          </div>
+              </Button>
+            </div>
           </form>
         </DialogContent>
       </Dialog>
@@ -1723,7 +1822,7 @@ const Invoices = () => {
                 <span className="text-xs text-muted-foreground capitalize">
                   {pendingInventoryCharge.item.type}
                 </span>
-              </div>
+                </div>
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="rounded-md bg-background p-2">
                   <p className="text-xs text-muted-foreground">Quantity to add</p>
@@ -1733,17 +1832,17 @@ const Invoices = () => {
                   <p className="text-xs text-muted-foreground">Current stock</p>
                   <p className="font-semibold">{pendingInventoryCharge.item.quantity}</p>
                 </div>
-              </div>
+                </div>
               <div className="rounded-md bg-background p-2">
                 <p className="text-xs text-muted-foreground">Charge total</p>
                 <p className="font-semibold">
                   {formatCurrency(pendingInventoryCharge.lineTotal)}
                 </p>
-              </div>
+                </div>
               <p className="text-xs text-muted-foreground">
                 You can deduct stock now or add the item without altering inventory.
               </p>
-            </div>
+              </div>
           )}
           <AlertDialogFooter className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             <AlertDialogCancel
@@ -1759,17 +1858,108 @@ const Invoices = () => {
               disabled={deductInventoryLoading || !pendingInventoryCharge}
             >
               Add without deduction
-            </Button>
+                </Button>
             <Button
               type="button"
               onClick={handleConfirmInventoryDeduction}
               disabled={deductInventoryLoading || !pendingInventoryCharge}
             >
               {deductInventoryLoading ? "Deducting..." : "Deduct & add"}
-            </Button>
+                </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add Reduction Dialog */}
+      <Dialog
+        open={addReductionOpen}
+        onOpenChange={(open) => {
+          setAddReductionOpen(open);
+          if (!open) {
+            resetReductionForm();
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add reduction</DialogTitle>
+            <DialogDescription>
+              Apply a manual deduction or percentage discount to this invoice.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleAddReductionSubmit} className="space-y-6">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={reductionMode === "manual" ? "default" : "outline"}
+                onClick={() => setReductionMode("manual")}
+              >
+                Manual entry
+              </Button>
+              <Button
+                type="button"
+                variant={reductionMode === "percentage" ? "default" : "outline"}
+                onClick={() => setReductionMode("percentage")}
+              >
+                Discount %
+              </Button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="reductionLabel">Description</Label>
+                <Input
+                  id="reductionLabel"
+                  placeholder="e.g., Loyalty discount"
+                  value={reductionLabel}
+                  onChange={(event) => setReductionLabel(event.target.value)}
+                />
+              </div>
+
+              {reductionMode === "manual" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="reductionAmount">Amount (LKR)</Label>
+                  <Input
+                    id="reductionAmount"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={reductionAmount}
+                    onChange={(event) => setReductionAmount(event.target.value)}
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label htmlFor="reductionPercentage">Percentage (%)</Label>
+                  <Input
+                    id="reductionPercentage"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    placeholder="0.00"
+                    value={reductionPercentage}
+                    onChange={(event) => setReductionPercentage(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    The percentage will be applied to the current invoice total.
+                  </p>
+                </div>
+              )}
+            </div>
+
+          <div className="flex justify-end gap-3">
+              <Button type="button" variant="outline" onClick={() => setAddReductionOpen(false)}>
+              Cancel
+            </Button>
+              <Button type="submit">
+                {reductionMode === "manual" ? "Add reduction" : "Apply discount"}
+            </Button>
+          </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
