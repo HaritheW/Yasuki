@@ -15,7 +15,12 @@ import { apiFetch } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Edit, Plus, Search, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  PAYMENT_METHOD_NONE_VALUE,
+  PAYMENT_METHOD_OTHER_VALUE,
+  PaymentMethodSelector,
+} from "@/components/payment-method-selector";
 
 type Supplier = {
   id: number;
@@ -76,7 +81,6 @@ const SUPPLIER_PURCHASES_QUERY_KEY = ["supplierPurchases"];
 const INVENTORY_QUERY_KEY = ["inventory"];
 
 const PURCHASE_PAYMENT_METHODS = ["Cash", "Card", "Bank Transfer", "Credit"];
-const OTHER_PAYMENT_METHOD_VALUE = "__other__";
 const DEFAULT_PAYMENT_METHOD = PURCHASE_PAYMENT_METHODS[0];
 
 const formatCurrency = (value: number | null | undefined) =>
@@ -121,6 +125,10 @@ const Suppliers = () => {
   const [purchaseStatusFilter, setPurchaseStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
   const [purchasePaymentMethod, setPurchasePaymentMethod] = useState<string>(DEFAULT_PAYMENT_METHOD);
   const [purchasePaymentMethodCustom, setPurchasePaymentMethodCustom] = useState("");
+  const [purchaseEditMethodChoice, setPurchaseEditMethodChoice] = useState<string>(
+    DEFAULT_PAYMENT_METHOD
+  );
+  const [purchaseEditMethodCustom, setPurchaseEditMethodCustom] = useState("");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [supplierFormLoading, setSupplierFormLoading] = useState(false);
@@ -130,6 +138,31 @@ const Suppliers = () => {
     setPurchasePaymentMethod(DEFAULT_PAYMENT_METHOD);
     setPurchasePaymentMethodCustom("");
   };
+
+  useEffect(() => {
+    if (!selectedPurchase) {
+      setPurchaseEditMethodChoice(DEFAULT_PAYMENT_METHOD);
+      setPurchaseEditMethodCustom("");
+      return;
+    }
+
+    const method = selectedPurchase.payment_method?.trim() ?? "";
+
+    if (!method) {
+      setPurchaseEditMethodChoice(PAYMENT_METHOD_NONE_VALUE);
+      setPurchaseEditMethodCustom("");
+      return;
+    }
+
+    if (PURCHASE_PAYMENT_METHODS.includes(method)) {
+      setPurchaseEditMethodChoice(method);
+      setPurchaseEditMethodCustom("");
+      return;
+    }
+
+    setPurchaseEditMethodChoice(PAYMENT_METHOD_OTHER_VALUE);
+    setPurchaseEditMethodCustom(method);
+  }, [selectedPurchase]);
 
   const clearPriceMismatchState = () => {
     setPriceMismatchOpen(false);
@@ -797,54 +830,18 @@ const Suppliers = () => {
                       placeholder="0.00"
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label>Payment Method</Label>
-                    <div className="flex flex-wrap gap-3">
-                      {PURCHASE_PAYMENT_METHODS.map((method) => (
-                        <label key={method} className="flex items-center gap-2 text-sm">
-                          <input
-                            type="radio"
-                            name="payment_method_choice"
-                            value={method}
-                            checked={purchasePaymentMethod === method}
-                            onChange={() => {
-                              setPurchasePaymentMethod(method);
-                              setPurchasePaymentMethodCustom("");
-                            }}
-                          />
-                          {method}
-                        </label>
-                      ))}
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="radio"
-                          name="payment_method_choice"
-                          value={OTHER_PAYMENT_METHOD_VALUE}
-                          checked={purchasePaymentMethod === OTHER_PAYMENT_METHOD_VALUE}
-                          onChange={() => setPurchasePaymentMethod(OTHER_PAYMENT_METHOD_VALUE)}
-                        />
-                        Other
-                      </label>
-                    </div>
-                    {purchasePaymentMethod === OTHER_PAYMENT_METHOD_VALUE && (
-                      <Input
-                        id="purchaseMethodOther"
-                        placeholder="Enter payment method"
-                        value={purchasePaymentMethodCustom}
-                        onChange={(event) => setPurchasePaymentMethodCustom(event.target.value)}
-                        required
-                      />
-                    )}
-                    <input
-                      type="hidden"
-                      name="payment_method"
-                      value={
-                        purchasePaymentMethod === OTHER_PAYMENT_METHOD_VALUE
-                          ? purchasePaymentMethodCustom.trim()
-                          : purchasePaymentMethod
-                      }
-                    />
-                  </div>
+                  <PaymentMethodSelector
+                    label="Payment method"
+                    value={purchasePaymentMethod}
+                    onValueChange={setPurchasePaymentMethod}
+                    customValue={purchasePaymentMethodCustom}
+                    onCustomValueChange={setPurchasePaymentMethodCustom}
+                    options={PURCHASE_PAYMENT_METHODS}
+                    placeholder="Enter payment method"
+                    idPrefix="purchase-create-method"
+                    helperText="Choose how this purchase was paid. Select “Other” to provide a custom method."
+                    name="payment_method"
+                  />
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -1422,14 +1419,19 @@ const Suppliers = () => {
                     <option value="unpaid">Unpaid</option>
                   </select>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="editPurchaseMethod">Payment Method</Label>
-                  <Input
-                    id="editPurchaseMethod"
-                    name="payment_method"
-                    defaultValue={selectedPurchase.payment_method ?? ""}
-                  />
-                </div>
+                <PaymentMethodSelector
+                  label="Payment method"
+                  value={purchaseEditMethodChoice}
+                  onValueChange={setPurchaseEditMethodChoice}
+                  customValue={purchaseEditMethodCustom}
+                  onCustomValueChange={setPurchaseEditMethodCustom}
+                  options={PURCHASE_PAYMENT_METHODS}
+                  includeNotSpecified
+                  placeholder="Enter payment method"
+                  idPrefix="purchase-edit-method"
+                  helperText="Select a preset, enter a custom method, or choose “Not specified” to clear it."
+                  name="payment_method"
+                />
                 <div className="space-y-2">
                   <Label htmlFor="editPurchaseDate">Purchase Date</Label>
                   <Input

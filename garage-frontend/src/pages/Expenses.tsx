@@ -25,6 +25,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import {
+  DEFAULT_PAYMENT_METHOD_OPTIONS,
+  PAYMENT_METHOD_OTHER_VALUE,
+  PaymentMethodSelector,
+} from "@/components/payment-method-selector";
 
 type PaymentStatus = "pending" | "paid" | "unpaid";
 
@@ -51,13 +56,13 @@ type ExpenseFormPayload = {
 
 const EXPENSES_QUERY_KEY = ["expenses"];
 const NO_CATEGORY_VALUE = "__none__";
-const PAYMENT_METHOD_OPTIONS = ["Cash", "Card", "Bank Transfer", "Online"] as const;
 const STATUS_STYLES: Record<PaymentStatus, string> = {
   paid: "bg-success text-success-foreground",
   pending: "bg-warning text-warning-foreground",
   unpaid: "bg-muted text-muted-foreground",
 };
-const OTHER_METHOD_VALUE = "__other__";
+
+type PaymentMethodOption = (typeof DEFAULT_PAYMENT_METHOD_OPTIONS)[number];
 
 const Expenses = () => {
   const [addOpen, setAddOpen] = useState(false);
@@ -67,10 +72,14 @@ const Expenses = () => {
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [createCategory, setCreateCategory] = useState<string>(NO_CATEGORY_VALUE);
   const [createStatus, setCreateStatus] = useState<PaymentStatus>("pending");
-  const [createMethod, setCreateMethod] = useState<string>("");
+  const [createMethodChoice, setCreateMethodChoice] = useState<string>(
+    DEFAULT_PAYMENT_METHOD_OPTIONS[0]
+  );
   const [createMethodCustom, setCreateMethodCustom] = useState<string>("");
   const [editStatus, setEditStatus] = useState<PaymentStatus>("pending");
-  const [editMethod, setEditMethod] = useState<string>("");
+  const [editMethodChoice, setEditMethodChoice] = useState<string>(
+    DEFAULT_PAYMENT_METHOD_OPTIONS[0]
+  );
   const [editMethodCustom, setEditMethodCustom] = useState<string>("");
   const [editCategory, setEditCategory] = useState<string>(NO_CATEGORY_VALUE);
   const { toast } = useToast();
@@ -119,50 +128,56 @@ const Expenses = () => {
     if (selectedExpense) {
       setEditCategory(selectedExpense.category ?? NO_CATEGORY_VALUE);
       setEditStatus(selectedExpense.payment_status);
-      const method = selectedExpense.payment_method || "";
+      const method = selectedExpense.payment_method?.trim() ?? "";
       if (method) {
-        if ((PAYMENT_METHOD_OPTIONS as readonly string[]).includes(method)) {
-          setEditMethod(method);
+        if ((DEFAULT_PAYMENT_METHOD_OPTIONS as readonly string[]).includes(method as PaymentMethodOption)) {
+          setEditMethodChoice(method);
           setEditMethodCustom("");
         } else {
-          setEditMethod(OTHER_METHOD_VALUE);
+          setEditMethodChoice(PAYMENT_METHOD_OTHER_VALUE);
           setEditMethodCustom(method);
         }
       } else {
-        setEditMethod("");
+        setEditMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
         setEditMethodCustom("");
       }
     } else {
       setEditCategory(NO_CATEGORY_VALUE);
       setEditStatus("pending");
-      setEditMethod("");
+      setEditMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
       setEditMethodCustom("");
     }
   }, [selectedExpense]);
 
   useEffect(() => {
-    if (createStatus === "paid") {
-      if (!createMethod) {
-        setCreateMethod(PAYMENT_METHOD_OPTIONS[0]);
-        setCreateMethodCustom("");
-      }
-    } else {
-      setCreateMethod("");
+    if (createStatus !== "paid") {
+      setCreateMethodCustom("");
+      return;
+    }
+
+    if (
+      createMethodChoice !== PAYMENT_METHOD_OTHER_VALUE &&
+      !(DEFAULT_PAYMENT_METHOD_OPTIONS as readonly string[]).includes(createMethodChoice as PaymentMethodOption)
+    ) {
+      setCreateMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
       setCreateMethodCustom("");
     }
-  }, [createStatus, createMethod]);
+  }, [createStatus, createMethodChoice]);
 
   useEffect(() => {
-    if (editStatus === "paid") {
-      if (!editMethod && !editMethodCustom) {
-        setEditMethod(PAYMENT_METHOD_OPTIONS[0]);
-        setEditMethodCustom("");
-      }
-    } else {
-      setEditMethod("");
+    if (editStatus !== "paid") {
+      setEditMethodCustom("");
+      return;
+    }
+
+    if (
+      editMethodChoice !== PAYMENT_METHOD_OTHER_VALUE &&
+      !(DEFAULT_PAYMENT_METHOD_OPTIONS as readonly string[]).includes(editMethodChoice as PaymentMethodOption)
+    ) {
+      setEditMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
       setEditMethodCustom("");
     }
-  }, [editStatus, editMethod, editMethodCustom]);
+  }, [editStatus, editMethodChoice]);
 
   const createExpenseMutation = useMutation<Expense, Error, ExpenseFormPayload>({
     mutationFn: (payload) =>
@@ -177,7 +192,7 @@ const Expenses = () => {
         description: `${expense.description} recorded successfully.`,
       });
       setCreateStatus("pending");
-      setCreateMethod("");
+      setCreateMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
       setCreateMethodCustom("");
       setCreateCategory(NO_CATEGORY_VALUE);
       setAddOpen(false);
@@ -210,17 +225,17 @@ const Expenses = () => {
       setSelectedExpense(expense);
       setEditCategory(expense.category ?? NO_CATEGORY_VALUE);
       setEditStatus(expense.payment_status);
-      const method = expense.payment_method || "";
+      const method = expense.payment_method?.trim() ?? "";
       if (method) {
-        if ((PAYMENT_METHOD_OPTIONS as readonly string[]).includes(method)) {
-          setEditMethod(method);
+        if ((DEFAULT_PAYMENT_METHOD_OPTIONS as readonly string[]).includes(method as PaymentMethodOption)) {
+          setEditMethodChoice(method);
           setEditMethodCustom("");
         } else {
-          setEditMethod(OTHER_METHOD_VALUE);
+          setEditMethodChoice(PAYMENT_METHOD_OTHER_VALUE);
           setEditMethodCustom(method);
         }
       } else {
-        setEditMethod("");
+        setEditMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
         setEditMethodCustom("");
       }
       setEditOpen(false);
@@ -291,9 +306,9 @@ const Expenses = () => {
 
     const methodValue =
       createStatus === "paid"
-        ? (createMethod === OTHER_METHOD_VALUE
-            ? createMethodCustom.trim()
-            : createMethod.trim())
+        ? createMethodChoice === PAYMENT_METHOD_OTHER_VALUE
+          ? createMethodCustom.trim()
+          : createMethodChoice.trim()
         : "";
 
     if (createStatus === "paid" && !methodValue) {
@@ -319,7 +334,7 @@ const Expenses = () => {
       onSuccess: () => {
         form.reset();
         setCreateStatus("pending");
-        setCreateMethod("");
+        setCreateMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
         setCreateMethodCustom("");
         setCreateCategory(NO_CATEGORY_VALUE);
       },
@@ -360,9 +375,9 @@ const Expenses = () => {
 
     const methodValue =
       editStatus === "paid"
-        ? (editMethod === OTHER_METHOD_VALUE
-            ? editMethodCustom.trim()
-            : editMethod.trim())
+        ? editMethodChoice === PAYMENT_METHOD_OTHER_VALUE
+          ? editMethodCustom.trim()
+          : editMethodChoice.trim()
         : "";
 
     if (editStatus === "paid" && !methodValue) {
@@ -418,7 +433,7 @@ const Expenses = () => {
             setAddOpen(open);
             if (!open) {
               setCreateStatus("pending");
-              setCreateMethod("");
+              setCreateMethodChoice(DEFAULT_PAYMENT_METHOD_OPTIONS[0]);
               setCreateMethodCustom("");
               setCreateCategory(NO_CATEGORY_VALUE);
             }
@@ -502,38 +517,16 @@ const Expenses = () => {
               </div>
 
               {createStatus === "paid" && (
-                <div className="space-y-2">
-                  <Label>Payment Method</Label>
-                  <RadioGroup
-                    value={createMethod}
-                    onValueChange={(value) => {
-                      setCreateMethod(value);
-                      if (value !== OTHER_METHOD_VALUE) {
-                        setCreateMethodCustom("");
-                      }
-                    }}
-                    className="flex flex-wrap gap-4"
-                  >
-                    {PAYMENT_METHOD_OPTIONS.map((option) => (
-                      <div key={option} className="flex items-center space-x-2">
-                        <RadioGroupItem value={option} id={`create-method-${option}`} />
-                        <Label htmlFor={`create-method-${option}`}>{option}</Label>
-                      </div>
-                    ))}
-                    <div className="flex items-center space-x-2">
-                      <RadioGroupItem value={OTHER_METHOD_VALUE} id="create-method-other" />
-                      <Label htmlFor="create-method-other">Other</Label>
-                    </div>
-                  </RadioGroup>
-                  {createMethod === OTHER_METHOD_VALUE && (
-                    <Input
-                      id="createMethodCustom"
-                      placeholder="Enter payment method"
-                      value={createMethodCustom}
-                      onChange={(event) => setCreateMethodCustom(event.target.value)}
-                    />
-                  )}
-                </div>
+                <PaymentMethodSelector
+                  label="Payment method"
+                  value={createMethodChoice}
+                  onValueChange={setCreateMethodChoice}
+                  customValue={createMethodCustom}
+                  onCustomValueChange={setCreateMethodCustom}
+                  options={DEFAULT_PAYMENT_METHOD_OPTIONS}
+                  placeholder="Enter payment method"
+                  idPrefix="expense-create-method"
+                />
               )}
 
               <div className="space-y-2">
@@ -838,38 +831,16 @@ const Expenses = () => {
                 </RadioGroup>
               </div>
               {editStatus === "paid" && (
-                <div className="space-y-2">
-                  <Label>Payment Method</Label>
-                  <RadioGroup
-                    value={editMethod}
-                    onValueChange={(value) => {
-                      setEditMethod(value);
-                      if (value !== OTHER_METHOD_VALUE) {
-                        setEditMethodCustom("");
-                      }
-                    }}
-                    className="flex flex-wrap gap-4"
-                  >
-                    {PAYMENT_METHOD_OPTIONS.map((option) => (
-                      <div key={option} className="flex items-center space-x-2">
-                        <RadioGroupItem value={option} id={`edit-method-${option}`} />
-                        <Label htmlFor={`edit-method-${option}`}>{option}</Label>
-                      </div>
-                    ))}
-                    <div className="flex items-center space-x-2">
-                      <RadioGroupItem value={OTHER_METHOD_VALUE} id="edit-method-other" />
-                      <Label htmlFor="edit-method-other">Other</Label>
-                    </div>
-                  </RadioGroup>
-                  {editMethod === OTHER_METHOD_VALUE && (
-                    <Input
-                      id="editMethodCustom"
-                      placeholder="Enter payment method"
-                      value={editMethodCustom}
-                      onChange={(event) => setEditMethodCustom(event.target.value)}
-                    />
-                  )}
-                </div>
+                <PaymentMethodSelector
+                  label="Payment method"
+                  value={editMethodChoice}
+                  onValueChange={setEditMethodChoice}
+                  customValue={editMethodCustom}
+                  onCustomValueChange={setEditMethodCustom}
+                  options={DEFAULT_PAYMENT_METHOD_OPTIONS}
+                  placeholder="Enter payment method"
+                  idPrefix="expense-edit-method"
+                />
               )}
               <div className="space-y-2">
                 <Label htmlFor="editRemarks">Remarks</Label>

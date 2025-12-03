@@ -11,6 +11,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -29,6 +38,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import {
+  DEFAULT_PAYMENT_METHOD_OPTIONS,
+  PAYMENT_METHOD_NONE_VALUE,
+  PAYMENT_METHOD_OTHER_VALUE,
+  PaymentMethodSelector,
+  type PaymentMethodOption,
+} from "@/components/payment-method-selector";
 
 type InvoiceSummary = {
   id: number;
@@ -77,6 +93,14 @@ type InventoryOption = {
   unit_cost: number | null;
 };
 
+type PendingInventoryCharge = {
+  item: InventoryOption;
+  quantity: number;
+  rate: number;
+  label: string;
+  lineTotal: number;
+};
+
 type UpdateInvoicePayload = {
   payment_method: string | null;
   payment_status: "unpaid" | "partial" | "paid";
@@ -117,7 +141,8 @@ const Invoices = () => {
   const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "partial" | "unpaid">("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [editPaymentStatus, setEditPaymentStatus] = useState<"unpaid" | "partial" | "paid">("unpaid");
-  const [editPaymentMethod, setEditPaymentMethod] = useState("");
+  const [editMethodChoice, setEditMethodChoice] = useState<string>(PAYMENT_METHOD_NONE_VALUE);
+  const [editMethodCustom, setEditMethodCustom] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editCharges, setEditCharges] = useState<Array<{ label: string; amount: string }>>([]);
   const [editReductions, setEditReductions] = useState<Array<{ label: string; amount: string }>>([]);
@@ -129,11 +154,32 @@ const Invoices = () => {
   const [inventoryPickerOpen, setInventoryPickerOpen] = useState(false);
   const [addChargeQuantity, setAddChargeQuantity] = useState("1");
   const [addChargeRate, setAddChargeRate] = useState("");
+  const [pendingInventoryCharge, setPendingInventoryCharge] = useState<PendingInventoryCharge | null>(null);
+  const [confirmDeductOpen, setConfirmDeductOpen] = useState(false);
+  const [deductInventoryLoading, setDeductInventoryLoading] = useState(false);
 
   const invoicesQuery = useQuery<InvoiceSummary[], Error>({
     queryKey: ["invoices"],
     queryFn: () => apiFetch<InvoiceSummary[]>("/invoices"),
   });
+
+  const syncEditPaymentMethod = (method: string | null | undefined) => {
+    const normalized = method?.trim() ?? "";
+    if (!normalized) {
+      setEditMethodChoice(PAYMENT_METHOD_NONE_VALUE);
+      setEditMethodCustom("");
+      return;
+    }
+
+    if ((DEFAULT_PAYMENT_METHOD_OPTIONS as readonly string[]).includes(normalized as PaymentMethodOption)) {
+      setEditMethodChoice(normalized);
+      setEditMethodCustom("");
+      return;
+    }
+
+    setEditMethodChoice(PAYMENT_METHOD_OTHER_VALUE);
+    setEditMethodCustom(normalized);
+  };
 
   const inventoryQuery = useQuery<InventoryOption[], Error>({
     queryKey: ["inventory", "options"],
@@ -154,13 +200,13 @@ const Invoices = () => {
         setSelectedInvoiceDetail(detail);
       })
       .catch((error) => {
-        toast({
+    toast({
           title: "Unable to load invoice",
           description: error.message,
           variant: "destructive",
-        });
+    });
         if (!options.fromNavigation) {
-          setDetailOpen(false);
+    setDetailOpen(false);
         }
       })
       .finally(() => {
@@ -191,7 +237,7 @@ const Invoices = () => {
     setEditPaymentStatus(
       (selectedInvoiceDetail.payment_status as "unpaid" | "partial" | "paid") ?? "unpaid"
     );
-    setEditPaymentMethod(selectedInvoiceDetail.payment_method ?? "");
+    syncEditPaymentMethod(selectedInvoiceDetail.payment_method ?? "");
     setEditNotes(selectedInvoiceDetail.notes ?? "");
     setEditCharges(
       currentCharges.map((entry) => ({
@@ -231,7 +277,7 @@ const Invoices = () => {
       setEditOpen(false);
       setDetailOpen(true);
       setEditPaymentStatus((invoice.payment_status as "unpaid" | "partial" | "paid") ?? "unpaid");
-      setEditPaymentMethod(invoice.payment_method ?? "");
+      syncEditPaymentMethod(invoice.payment_method ?? "");
       setEditNotes(invoice.notes ?? "");
       setEditCharges(
         (invoice.charges ?? []).map((entry) => ({
@@ -245,7 +291,7 @@ const Invoices = () => {
           amount: entry.amount?.toString() ?? "",
         }))
       );
-      toast({
+    toast({
         title: "Invoice updated",
         description: `Invoice ${invoice.invoice_no ?? `#${invoice.id}`} updated successfully.`,
       });
@@ -266,18 +312,18 @@ const Invoices = () => {
         method: "DELETE",
       }),
     onSuccess: (_data, variables) => {
-      toast({
+    toast({
         title: "Invoice deleted",
         description: `${variables.label} has been deleted successfully.`,
-      });
+    });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      setDeleteOpen(false);
-      setDetailOpen(false);
+    setDeleteOpen(false);
+    setDetailOpen(false);
       setSelectedInvoiceDetail(null);
       setSelectedInvoiceLabel("");
     },
     onError: (error) => {
-      toast({
+    toast({
         title: "Unable to delete invoice",
         description: error.message,
         variant: "destructive",
@@ -336,7 +382,7 @@ const Invoices = () => {
 
         const amount = Number(rawAmount);
         if (!label || !Number.isFinite(amount) || amount < 0) {
-          toast({
+    toast({
             title: "Incomplete entry",
             description: `Each ${kind === "charge" ? "charge" : "reduction"} requires a label and non-negative amount.`,
             variant: "destructive",
@@ -354,10 +400,28 @@ const Invoices = () => {
     const parsedReductions = parseEntries(editReductions, "reduction");
     if (!parsedReductions) return;
 
+    let paymentMethodValue = "";
+    if (editMethodChoice === PAYMENT_METHOD_OTHER_VALUE) {
+      const customMethod = editMethodCustom.trim();
+      if (!customMethod) {
+        toast({
+          title: "Missing payment method",
+          description: "Provide a name for the payment method or select another option.",
+          variant: "destructive",
+        });
+        return;
+      }
+      paymentMethodValue = customMethod;
+    } else if (editMethodChoice === PAYMENT_METHOD_NONE_VALUE) {
+      paymentMethodValue = "";
+    } else {
+      paymentMethodValue = editMethodChoice;
+    }
+
     updateInvoiceMutation.mutate({
       id: selectedInvoiceDetail.id,
       payload: {
-        payment_method: editPaymentMethod.trim() ? editPaymentMethod.trim() : null,
+        payment_method: paymentMethodValue ? paymentMethodValue : null,
         payment_status: editPaymentStatus,
         notes: editNotes.trim() ? editNotes.trim() : null,
         charges: parsedCharges,
@@ -386,13 +450,13 @@ const Invoices = () => {
     ? selectedInvoiceDetail.items_total ??
       selectedInvoiceDetail.items.reduce((sum, item) => sum + item.line_total, 0)
     : 0;
-  const extraChargesTotal =
+  const chargesTotal =
     selectedInvoiceDetail?.total_charges ??
     detailCharges.reduce((sum, entry) => sum + entry.amount, 0);
   const reductionsTotal =
     selectedInvoiceDetail?.total_deductions ??
     detailReductions.reduce((sum, entry) => sum + entry.amount, 0);
-  const finalAmount = selectedInvoiceDetail?.final_total ?? itemsTotal + extraChargesTotal - reductionsTotal;
+  const finalAmount = selectedInvoiceDetail?.final_total ?? itemsTotal + chargesTotal - reductionsTotal;
   const detailStatusMeta = selectedInvoiceDetail ? getStatusMeta(selectedInvoiceDetail.payment_status) : null;
   const estimateAmount = selectedInvoiceDetail?.initial_amount ?? null;
   const advanceReduction = detailReductions.find(
@@ -420,6 +484,39 @@ const Invoices = () => {
     setInventoryPickerOpen(false);
     setAddChargeQuantity("1");
     setAddChargeRate("");
+    setPendingInventoryCharge(null);
+    setConfirmDeductOpen(false);
+  };
+
+  const finalizeInventoryChargeAddition = ({
+    item,
+    label,
+    lineTotal,
+    quantity,
+    deducted,
+  }: {
+    item: InventoryOption;
+    label: string;
+    lineTotal: number;
+    quantity: number;
+    deducted: boolean;
+  }) => {
+    const unitsLabel = quantity === 1 ? "unit" : "units";
+
+    setEditCharges((prev) => [
+      ...prev,
+      { label, amount: lineTotal.toString() },
+    ]);
+
+    toast({
+      title: "Inventory item added",
+      description: deducted
+        ? `${item.name} added and ${quantity} ${unitsLabel} deducted from inventory.`
+        : `${item.name} added as a charge${item.type === "consumable" ? ", inventory left unchanged." : "."}`,
+    });
+
+    resetAddChargeForm();
+    setAddChargeOpen(false);
   };
 
   useEffect(() => {
@@ -451,7 +548,7 @@ const Invoices = () => {
       setEditCharges((prev) => [...prev, { label, amount: amountValue.toString() }]);
       toast({
         title: "Charge added",
-        description: `${label} recorded as an additional charge.`,
+        description: `${label} recorded as a charge.`,
       });
       resetAddChargeForm();
       setAddChargeOpen(false);
@@ -482,44 +579,78 @@ const Invoices = () => {
       return;
     }
 
-    if (inventoryItem.type === "consumable") {
-      const confirmed = window.confirm(
-        `Deduct ${quantityValue} unit(s) of ${inventoryItem.name} from inventory?`
-      );
-      if (!confirmed) {
-        return;
-      }
-
-      try {
-        await apiFetch(`/inventory/${inventoryItem.id}/deduct`, {
-          method: "POST",
-          body: JSON.stringify({ quantity: quantityValue }),
-        });
-        queryClient.invalidateQueries({ queryKey: ["inventory", "options"] });
-      } catch (error) {
-        toast({
-          title: "Stock deduction failed",
-          description: error instanceof Error ? error.message : "Unable to deduct inventory.",
-          variant: "destructive",
-        });
-        return;
-      }
-    }
-
     const lineTotal = quantityValue * rateValue;
     const label = `${inventoryItem.name}${quantityValue > 1 ? ` (${quantityValue}×)` : ""}`;
 
-    setEditCharges((prev) => [
-      ...prev,
-      { label, amount: lineTotal.toString() },
-    ]);
+    if (inventoryItem.type === "consumable") {
+      setPendingInventoryCharge({
+        item: inventoryItem,
+        quantity: quantityValue,
+        rate: rateValue,
+        label,
+        lineTotal,
+      });
+      setConfirmDeductOpen(true);
+      return;
+    }
 
-    toast({
-      title: "Inventory item added",
-      description: `${inventoryItem.name} added as an invoice charge.`,
+    finalizeInventoryChargeAddition({
+      item: inventoryItem,
+      label,
+      lineTotal,
+      quantity: quantityValue,
+      deducted: false,
     });
-    resetAddChargeForm();
-    setAddChargeOpen(false);
+  };
+
+  const handleCancelInventoryDeduction = () => {
+    if (deductInventoryLoading) return;
+    setConfirmDeductOpen(false);
+    setPendingInventoryCharge(null);
+  };
+
+  const handleSkipInventoryDeduction = () => {
+    if (!pendingInventoryCharge) return;
+
+    const { item, label, lineTotal, quantity } = pendingInventoryCharge;
+
+    finalizeInventoryChargeAddition({
+      item,
+      label,
+      lineTotal,
+      quantity,
+      deducted: false,
+    });
+  };
+
+  const handleConfirmInventoryDeduction = async () => {
+    if (!pendingInventoryCharge) return;
+
+    setDeductInventoryLoading(true);
+    try {
+      await apiFetch(`/inventory/${pendingInventoryCharge.item.id}/deduct`, {
+        method: "POST",
+        body: JSON.stringify({ quantity: pendingInventoryCharge.quantity }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["inventory", "options"] });
+
+      const { item, label, lineTotal, quantity } = pendingInventoryCharge;
+      finalizeInventoryChargeAddition({
+        item,
+        label,
+        lineTotal,
+        quantity,
+        deducted: true,
+      });
+    } catch (error) {
+      toast({
+        title: "Stock deduction failed",
+        description: error instanceof Error ? error.message : "Unable to deduct inventory.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeductInventoryLoading(false);
+    }
   };
 
   return (
@@ -595,72 +726,72 @@ const Invoices = () => {
                     const statusMeta = getStatusMeta(invoice.payment_status);
                     const displayId = invoice.invoice_no ?? `INV-${invoice.id}`;
                     return (
-                      <tr
-                        key={invoice.id}
-                        className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
+                  <tr 
+                    key={invoice.id} 
+                    className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
                         onClick={() => handleInvoiceRowClick(invoice)}
                       >
                         <td className="p-3 font-semibold">{displayId}</td>
                         <td className="p-3">{invoice.customer_name ?? "Walk-in customer"}</td>
                         <td className="p-3 text-muted-foreground">{formatDate(invoice.invoice_date)}</td>
                         <td className="p-3 font-semibold">{formatCurrency(invoice.final_total)}</td>
-                        <td className="p-3">
+                    <td className="p-3">
                           <Badge className={statusMeta.className}>{statusMeta.label}</Badge>
-                        </td>
+                    </td>
                         <td className="p-3 text-sm text-muted-foreground max-w-[220px] truncate" title={invoice.notes ?? "—"}>
                           {invoice.notes ?? "—"}
                         </td>
                         <td className="p-3" onClick={(event) => event.stopPropagation()}>
-                          <div className="flex gap-2">
+                      <div className="flex gap-2">
                             <Button variant="ghost" size="icon" title="View" onClick={() => handleInvoiceRowClick(invoice)}>
-                              <FileText className="h-4 w-4" />
-                            </Button>
-                            <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
-                              <DialogTrigger asChild>
+                          <FileText className="h-4 w-4" />
+                        </Button>
+                        <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
+                          <DialogTrigger asChild>
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   title="Send Email"
                                   onClick={() => setSelectedInvoiceLabel(displayId)}
                                 >
-                                  <Mail className="h-4 w-4" />
-                                </Button>
-                              </DialogTrigger>
-                              <DialogContent>
-                                <DialogHeader>
-                                  <DialogTitle>Send Invoice via Email</DialogTitle>
-                                  <DialogDescription>Send {displayId} to the customer's email address</DialogDescription>
-                                </DialogHeader>
-                                <form onSubmit={handleSendEmail} className="space-y-4">
-                                  <div className="space-y-2">
-                                    <Label htmlFor="email">Email Address</Label>
-                                    <Input id="email" type="email" placeholder="customer@example.com" required />
-                                  </div>
-                                  <div className="space-y-2">
-                                    <Label htmlFor="subject">Subject</Label>
-                                    <Input id="subject" defaultValue={`Invoice ${displayId} from Garage`} required />
-                                  </div>
-                                  <div className="space-y-2">
-                                    <Label htmlFor="message">Message (Optional)</Label>
-                                    <Input id="message" placeholder="Add a custom message..." />
-                                  </div>
-                                  <div className="flex justify-end gap-3">
-                                    <Button type="button" variant="outline" onClick={() => setEmailOpen(false)}>
-                                      Cancel
-                                    </Button>
-                                    <Button type="submit" className="bg-primary">
-                                      Send Invoice
-                                    </Button>
-                                  </div>
-                                </form>
-                              </DialogContent>
-                            </Dialog>
-                            <Button variant="ghost" size="icon" title="Download">
-                              <Download className="h-4 w-4" />
+                              <Mail className="h-4 w-4" />
                             </Button>
-                          </div>
-                        </td>
-                      </tr>
+                          </DialogTrigger>
+                          <DialogContent>
+                            <DialogHeader>
+                              <DialogTitle>Send Invoice via Email</DialogTitle>
+                                  <DialogDescription>Send {displayId} to the customer's email address</DialogDescription>
+                            </DialogHeader>
+                            <form onSubmit={handleSendEmail} className="space-y-4">
+                              <div className="space-y-2">
+                                <Label htmlFor="email">Email Address</Label>
+                                <Input id="email" type="email" placeholder="customer@example.com" required />
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor="subject">Subject</Label>
+                                    <Input id="subject" defaultValue={`Invoice ${displayId} from Garage`} required />
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor="message">Message (Optional)</Label>
+                                <Input id="message" placeholder="Add a custom message..." />
+                              </div>
+                              <div className="flex justify-end gap-3">
+                                <Button type="button" variant="outline" onClick={() => setEmailOpen(false)}>
+                                  Cancel
+                                </Button>
+                                <Button type="submit" className="bg-primary">
+                                  Send Invoice
+                                </Button>
+                              </div>
+                            </form>
+                          </DialogContent>
+                        </Dialog>
+                        <Button variant="ghost" size="icon" title="Download">
+                          <Download className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
                     );
                   })}
               </tbody>
@@ -716,7 +847,7 @@ const Invoices = () => {
               </div>
 
               <div className="grid gap-4 rounded-md border p-4 md:grid-cols-2">
-                <div>
+              <div>
                   <Label className="text-xs uppercase tracking-wide text-muted-foreground">Customer</Label>
                   <p className="font-semibold text-sm">
                     {selectedInvoiceDetail.customer_name ?? "Walk-in customer"}
@@ -762,13 +893,13 @@ const Invoices = () => {
               )}
 
               {selectedInvoiceDetail.items.length > 0 && (
-                <div className="space-y-3">
+              <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold">Line items</h3>
                     <span className="text-sm text-muted-foreground">
                       {selectedInvoiceDetail.items.length} item{selectedInvoiceDetail.items.length === 1 ? "" : "s"}
                     </span>
-                  </div>
+                </div>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
                       <thead className="bg-muted/40 text-left">
@@ -778,9 +909,9 @@ const Invoices = () => {
                           <th className="p-3 font-medium">Qty</th>
                           <th className="p-3 font-medium">Unit price</th>
                           <th className="p-3 font-medium">Line total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                      </tr>
+                    </thead>
+                    <tbody>
                         {selectedInvoiceDetail.items.map((item) => (
                           <tr key={item.id} className="border-t">
                             <td className="p-3 font-semibold">{item.item_name}</td>
@@ -798,7 +929,7 @@ const Invoices = () => {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-3">
-                  <h3 className="text-lg font-semibold">Additional charges</h3>
+                  <h3 className="text-lg font-semibold">Charges</h3>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
                       <thead className="bg-muted/40 text-left">
@@ -811,32 +942,32 @@ const Invoices = () => {
                         {detailCharges.length === 0 && (
                           <tr>
                             <td colSpan={2} className="p-3 text-sm text-muted-foreground">
-                              No additional charges recorded.
+                              No charges recorded.
                             </td>
                           </tr>
                         )}
                         {detailCharges.map((charge) => (
                           <tr key={`${charge.label}-${charge.id ?? ""}`} className="border-t">
-                            <td className="p-3">
+                          <td className="p-3">
                               <span className="font-medium">{charge.label}</span>
                               {charge.label?.toLowerCase() === "initial amount" && (
                                 <span className="ml-2 text-xs text-muted-foreground">(Estimate)</span>
-                              )}
-                            </td>
+                            )}
+                          </td>
                             <td className="p-3 text-right font-semibold">
                               {formatCurrency(charge.amount)}
-                            </td>
-                          </tr>
-                        ))}
-                        <tr className="border-t font-semibold">
-                          <td className="p-3">Total additional charges</td>
-                          <td className="p-3 text-right">{formatCurrency(extraChargesTotal)}</td>
+                          </td>
                         </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                      ))}
+                        <tr className="border-t font-semibold">
+                          <td className="p-3">Total charges</td>
+                          <td className="p-3 text-right">{formatCurrency(chargesTotal)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
-                <div className="space-y-3">
+              </div>
+              <div className="space-y-3">
                   <h3 className="text-lg font-semibold">Reductions</h3>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
@@ -844,9 +975,9 @@ const Invoices = () => {
                         <tr>
                           <th className="p-3 font-medium">Category</th>
                           <th className="p-3 font-medium text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                      </tr>
+                    </thead>
+                    <tbody>
                         {detailReductions.length === 0 && (
                           <tr>
                             <td colSpan={2} className="p-3 text-sm text-muted-foreground">
@@ -865,26 +996,22 @@ const Invoices = () => {
                             <td className="p-3 text-right font-semibold">
                               {formatCurrency(reduction.amount)}
                             </td>
-                          </tr>
-                        ))}
+                        </tr>
+                      ))}
                         <tr className="border-t font-semibold">
                           <td className="p-3">Total reductions</td>
                           <td className="p-3 text-right">{formatCurrency(reductionsTotal)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                      </tr>
+                    </tbody>
+                  </table>
                   </div>
                 </div>
               </div>
 
               <div className="space-y-2 rounded-md border bg-muted/20 p-4">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Items total</span>
-                  <span className="font-semibold">{formatCurrency(itemsTotal)}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Additional charges</span>
-                  <span className="font-semibold">{formatCurrency(extraChargesTotal)}</span>
+                  <span className="text-muted-foreground">Charges</span>
+                  <span className="font-semibold">{formatCurrency(chargesTotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Reductions</span>
@@ -897,8 +1024,8 @@ const Invoices = () => {
               </div>
 
               <div className="flex flex-col gap-3 border-t pt-4 md:flex-row">
-                <Button
-                  variant="outline"
+                <Button 
+                  variant="outline" 
                   className="md:flex-1"
                   onClick={() => {
                     setDetailOpen(false);
@@ -932,34 +1059,36 @@ const Invoices = () => {
           {selectedInvoiceDetail && (
             <form onSubmit={handleEdit} className="space-y-6">
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
+            <div className="space-y-2">
                   <Label htmlFor="editStatus">Payment status</Label>
                   <Select
                     value={editPaymentStatus}
                     onValueChange={(value) => setEditPaymentStatus(value as "unpaid" | "partial" | "paid")}
                   >
                     <SelectTrigger id="editStatus">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
                       <SelectItem value="unpaid">Unpaid</SelectItem>
                       <SelectItem value="partial">Partial</SelectItem>
                       <SelectItem value="paid">Paid</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="editMethod">Payment method</Label>
-                  <Input
-                    id="editMethod"
-                    placeholder="e.g., Cash, Bank transfer, Card"
-                    value={editPaymentMethod}
-                    onChange={(event) => setEditPaymentMethod(event.target.value)}
+                </SelectContent>
+              </Select>
+            </div>
+                  <PaymentMethodSelector
+                    label="Payment method"
+                    value={editMethodChoice}
+                    onValueChange={setEditMethodChoice}
+                    customValue={editMethodCustom}
+                    onCustomValueChange={setEditMethodCustom}
+                    options={DEFAULT_PAYMENT_METHOD_OPTIONS}
+                    includeNotSpecified
+                    placeholder="Enter payment method"
+                    idPrefix="invoice-edit-method"
                   />
-                </div>
               </div>
 
-              <div className="space-y-2">
+                  <div className="space-y-2">
                 <Label htmlFor="editNotes">Remarks</Label>
                 <Textarea
                   id="editNotes"
@@ -968,11 +1097,11 @@ const Invoices = () => {
                   value={editNotes}
                   onChange={(event) => setEditNotes(event.target.value)}
                 />
-              </div>
+                  </div>
 
-              <div className="space-y-4">
+                <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <Label className="text-base font-semibold">Additional charges</Label>
+                  <Label className="text-base font-semibold">Charges</Label>
                   <Button
                     type="button"
                     variant="outline"
@@ -985,10 +1114,10 @@ const Invoices = () => {
                   >
                     Add charge
                   </Button>
-                </div>
+                  </div>
                 {editCharges.length === 0 && (
                   <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
-                    No extra charges yet. Use “Add charge” to include labour, parts, or other costs.
+                    No charges yet. Use “Add charge” to include labour, parts, or other costs.
                   </p>
                 )}
                 {editCharges.map((entry, index) => (
@@ -1028,7 +1157,7 @@ const Invoices = () => {
                     </Button>
                   </div>
                 ))}
-              </div>
+                  </div>
 
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -1084,17 +1213,17 @@ const Invoices = () => {
                     </Button>
                   </div>
                 ))}
-              </div>
-
+            </div>
+            
               <div className="flex justify-end gap-3 pt-2">
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
-                  Cancel
-                </Button>
+                Cancel
+              </Button>
                 <Button type="submit" disabled={updateInvoiceMutation.isPending}>
                   {updateInvoiceMutation.isPending ? "Saving..." : "Save invoice"}
-                </Button>
-              </div>
-            </form>
+              </Button>
+            </div>
+          </form>
           )}
         </DialogContent>
       </Dialog>
@@ -1222,7 +1351,7 @@ const Invoices = () => {
                                   <span className="text-xs text-muted-foreground capitalize">
                                     {item.type} • In stock: {item.quantity}
                                   </span>
-                                </div>
+                </div>
                               </CommandItem>
                             ))}
                           </CommandGroup>
@@ -1239,7 +1368,7 @@ const Invoices = () => {
 
                 {selectedInventoryOption && (
                   <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
+                <div className="space-y-2">
                       <Label htmlFor="inventoryQuantity">Quantity</Label>
                       <Input
                         id="inventoryQuantity"
@@ -1249,7 +1378,7 @@ const Invoices = () => {
                         value={addChargeQuantity}
                         onChange={(event) => setAddChargeQuantity(event.target.value)}
                       />
-                    </div>
+                </div>
                     <div className="space-y-2">
                       <Label htmlFor="inventoryRate">Unit price (LKR)</Label>
                       <Input
@@ -1260,23 +1389,95 @@ const Invoices = () => {
                         value={addChargeRate}
                         onChange={(event) => setAddChargeRate(event.target.value)}
                       />
-                    </div>
-                  </div>
+                </div>
+              </div>
                 )}
               </div>
             )}
 
-            <div className="flex justify-end gap-3">
+          <div className="flex justify-end gap-3">
               <Button type="button" variant="outline" onClick={() => setAddChargeOpen(false)}>
-                Cancel
-              </Button>
+              Cancel
+            </Button>
               <Button type="submit">
                 {addChargeMode === "manual" ? "Add charge" : "Add inventory item"}
-              </Button>
-            </div>
+            </Button>
+          </div>
           </form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={confirmDeductOpen}
+        onOpenChange={(open) => {
+          if (deductInventoryLoading) return;
+          setConfirmDeductOpen(open);
+          if (!open) {
+            setPendingInventoryCharge(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deduct inventory?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Decide whether to decrease stock for this consumable now or keep inventory unchanged.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {pendingInventoryCharge && (
+            <div className="space-y-3 rounded-md border border-border bg-muted/30 p-4 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-foreground">{pendingInventoryCharge.item.name}</span>
+                <span className="text-xs text-muted-foreground capitalize">
+                  {pendingInventoryCharge.item.type}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-md bg-background p-2">
+                  <p className="text-xs text-muted-foreground">Quantity to add</p>
+                  <p className="font-semibold">{pendingInventoryCharge.quantity}</p>
+                </div>
+                <div className="rounded-md bg-background p-2">
+                  <p className="text-xs text-muted-foreground">Current stock</p>
+                  <p className="font-semibold">{pendingInventoryCharge.item.quantity}</p>
+                </div>
+              </div>
+              <div className="rounded-md bg-background p-2">
+                <p className="text-xs text-muted-foreground">Charge total</p>
+                <p className="font-semibold">
+                  {formatCurrency(pendingInventoryCharge.lineTotal)}
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                You can deduct stock now or add the item without altering inventory.
+              </p>
+            </div>
+          )}
+          <AlertDialogFooter className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+            <AlertDialogCancel
+              onClick={handleCancelInventoryDeduction}
+              disabled={deductInventoryLoading}
+            >
+              Back
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleSkipInventoryDeduction}
+              disabled={deductInventoryLoading || !pendingInventoryCharge}
+            >
+              Add without deduction
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmInventoryDeduction}
+              disabled={deductInventoryLoading || !pendingInventoryCharge}
+            >
+              {deductInventoryLoading ? "Deducting..." : "Deduct & add"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
