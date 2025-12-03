@@ -158,9 +158,16 @@ const normalizeIdArray = (value) => {
 const fetchJobDetails = async (jobId) => {
     const job = await getAsync(
         `
-        SELECT Jobs.*, Customers.name AS customer_name
+        SELECT
+            Jobs.*,
+            Customers.name AS customer_name,
+            Vehicles.make AS vehicle_make,
+            Vehicles.model AS vehicle_model,
+            Vehicles.year AS vehicle_year,
+            Vehicles.license_plate AS vehicle_license_plate
         FROM Jobs
         LEFT JOIN Customers ON Customers.id = Jobs.customer_id
+        LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
         WHERE Jobs.id = ?
     `,
         [jobId]
@@ -202,6 +209,11 @@ const fetchJobDetails = async (jobId) => {
 
     return {
         ...job,
+        vehicle_make: job.vehicle_make ?? (vehicle ? vehicle.make : null),
+        vehicle_model: job.vehicle_model ?? (vehicle ? vehicle.model : null),
+        vehicle_year: job.vehicle_year ?? (vehicle ? vehicle.year : null),
+        vehicle_license_plate:
+            job.vehicle_license_plate ?? (vehicle ? vehicle.license_plate : null),
         vehicle,
         technicians,
         items,

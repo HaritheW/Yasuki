@@ -323,7 +323,7 @@ const Jobs = () => {
       if (job.vehicle_id) {
         queryClient.invalidateQueries({ queryKey: VEHICLES_QUERY_KEY });
       }
-      toast({
+    toast({
         title: "Job created",
         description: `Job #${job.id} has been created successfully.`,
       });
@@ -404,7 +404,7 @@ const Jobs = () => {
       const trimmedModel = vehicleModel.trim();
 
       if (!trimmedMake || !trimmedModel) {
-        toast({
+    toast({
           title: "Vehicle details required",
           description: "Provide at least the vehicle make and model.",
           variant: "destructive",
@@ -783,7 +783,7 @@ const Jobs = () => {
                     onChange={(event) => setAdvanceAmount(event.target.value)}
                   />
                 </div>
-              </div>
+                </div>
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
@@ -822,10 +822,10 @@ const Jobs = () => {
                     onChange={(event) => setVehicleLicensePlate(event.target.value)}
                   />
                 </div>
-              </div>
+                </div>
 
               <div className="space-y-2">
-                <Label>Assign Technicians</Label>
+                  <Label>Assign Technicians</Label>
                 <div className="flex flex-col gap-2 rounded-md border p-4">
                   {techniciansLoading && <p className="text-sm text-muted-foreground">Loading technicians...</p>}
                   {techniciansError && (
@@ -841,7 +841,7 @@ const Jobs = () => {
                     technicians.length > 0 &&
                     technicians.map((technician) => (
                       <label key={technician.id} className="flex items-center gap-3 text-sm">
-                        <Checkbox
+                        <Checkbox 
                           id={`tech-${technician.id}`}
                           checked={assignedTechnicians.includes(technician.id)}
                           onCheckedChange={(checked) => toggleTechnician(technician.id, checked === true)}
@@ -852,12 +852,12 @@ const Jobs = () => {
                             <span className="ml-2 text-xs text-muted-foreground">({technician.status})</span>
                           )}
                         </span>
-                      </label>
+                        </label>
                     ))}
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-2">
+                <div className="space-y-2">
                 <Label htmlFor="jobDescription">Job Description</Label>
                 <Textarea
                   id="jobDescription"
@@ -965,17 +965,17 @@ const Jobs = () => {
                 {!jobsLoading &&
                   !jobsError &&
                   filteredJobs.map((job) => (
-                    <tr
-                      key={job.id}
+                  <tr 
+                    key={job.id} 
                       className="border-b last:border-b-0 cursor-pointer transition hover:bg-muted/50"
                       onClick={() => handleJobRowClick(job)}
                     >
                       <td className="p-3 font-semibold">#{job.id}</td>
                       <td className="p-3">{job.customer_name ?? `Customer #${job.customer_id}`}</td>
                       <td className="p-3 text-muted-foreground">{formatVehicle(job)}</td>
-                      <td className="p-3">
+                    <td className="p-3">
                         <Badge className={STATUS_BADGE_STYLES[job.job_status]}>{job.job_status}</Badge>
-                      </td>
+                    </td>
                       <td className="p-3 text-muted-foreground">
                         {job.technicians.length > 0
                           ? job.technicians.map((tech) => tech.name).join(", ")
@@ -985,8 +985,8 @@ const Jobs = () => {
                       <td className="p-3 text-muted-foreground max-w-[220px] truncate" title={job.notes ?? "—"}>
                         {job.notes ?? "—"}
                       </td>
-                    </tr>
-                  ))}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -1059,7 +1059,7 @@ const Jobs = () => {
                       ? jobDetail.technicians.map((tech) => tech.name).join(", ")
                       : "No technicians assigned"}
                   </p>
-                </div>
+              </div>
               </div>
               <div className="space-y-2">
                 <Label className="text-muted-foreground">Description</Label>
@@ -1124,8 +1124,8 @@ const Jobs = () => {
                 </div>
               )}
               <div className="flex flex-col gap-2 border-t pt-4 md:flex-row">
-                <Button
-                  variant="outline"
+                <Button 
+                  variant="outline" 
                   className="md:flex-1"
                   onClick={() => {
                     setJobDetailOpen(false);
@@ -1159,8 +1159,8 @@ const Jobs = () => {
                     </Button>
                   )
                 )}
-                <Button
-                  variant="destructive"
+                <Button 
+                  variant="destructive" 
                   className="md:flex-1"
                   onClick={() => {
                     setJobDetailOpen(false);
@@ -1236,8 +1236,8 @@ const Jobs = () => {
                     placeholder="0.00"
                   />
                 </div>
-              </div>
-              <div className="space-y-2">
+                </div>
+                <div className="space-y-2">
                 <Label htmlFor="editNotes">Notes</Label>
                 <Textarea
                   id="editNotes"

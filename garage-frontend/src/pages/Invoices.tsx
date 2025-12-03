@@ -138,6 +138,10 @@ const Invoices = () => {
   const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLabel, setPreviewLabel] = useState("");
+  const [previewDetail, setPreviewDetail] = useState<InvoiceDetail | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "partial" | "unpaid">("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [editPaymentStatus, setEditPaymentStatus] = useState<"unpaid" | "partial" | "paid">("unpaid");
@@ -211,6 +215,29 @@ const Invoices = () => {
       })
       .finally(() => {
         setInvoiceDetailLoading(false);
+      });
+  };
+
+  const openInvoicePreview = (invoice: InvoiceSummary) => {
+    setPreviewLabel(invoice.invoice_no ?? `Invoice #${invoice.id}`);
+    setPreviewDetail(null);
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+
+    apiFetch<InvoiceDetail>(`/invoices/${invoice.id}`)
+      .then((detail) => {
+        setPreviewDetail(detail);
+      })
+      .catch((error) => {
+        toast({
+          title: "Unable to load invoice preview",
+          description: error.message,
+          variant: "destructive",
+        });
+        setPreviewOpen(false);
+      })
+      .finally(() => {
+        setPreviewLoading(false);
       });
   };
 
@@ -460,6 +487,25 @@ const Invoices = () => {
   const detailStatusMeta = selectedInvoiceDetail ? getStatusMeta(selectedInvoiceDetail.payment_status) : null;
   const estimateAmount = selectedInvoiceDetail?.initial_amount ?? null;
   const advanceReduction = detailReductions.find(
+    (entry) => entry.label?.toLowerCase() === "advance"
+  );
+
+  const previewCharges = previewDetail?.charges ?? [];
+  const previewReductions = previewDetail?.reductions ?? [];
+  const previewItemsTotal = previewDetail
+    ? previewDetail.items_total ??
+      previewDetail.items.reduce((sum, item) => sum + item.line_total, 0)
+    : 0;
+  const previewChargesTotal =
+    previewDetail?.total_charges ??
+    previewCharges.reduce((sum, entry) => sum + entry.amount, 0);
+  const previewReductionsTotal =
+    previewDetail?.total_deductions ??
+    previewReductions.reduce((sum, entry) => sum + entry.amount, 0);
+  const previewFinalAmount =
+    previewDetail?.final_total ?? previewItemsTotal + previewChargesTotal - previewReductionsTotal;
+  const previewStatusMeta = previewDetail ? getStatusMeta(previewDetail.payment_status) : null;
+  const previewAdvanceReduction = previewReductions.find(
     (entry) => entry.label?.toLowerCase() === "advance"
   );
 
@@ -743,7 +789,12 @@ const Invoices = () => {
                         </td>
                         <td className="p-3" onClick={(event) => event.stopPropagation()}>
                       <div className="flex gap-2">
-                            <Button variant="ghost" size="icon" title="View" onClick={() => handleInvoiceRowClick(invoice)}>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="View"
+                              onClick={() => openInvoicePreview(invoice)}
+                            >
                           <FileText className="h-4 w-4" />
                         </Button>
                         <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
@@ -847,7 +898,7 @@ const Invoices = () => {
               </div>
 
               <div className="grid gap-4 rounded-md border p-4 md:grid-cols-2">
-              <div>
+                <div>
                   <Label className="text-xs uppercase tracking-wide text-muted-foreground">Customer</Label>
                   <p className="font-semibold text-sm">
                     {selectedInvoiceDetail.customer_name ?? "Walk-in customer"}
@@ -893,13 +944,13 @@ const Invoices = () => {
               )}
 
               {selectedInvoiceDetail.items.length > 0 && (
-              <div className="space-y-3">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold">Line items</h3>
                     <span className="text-sm text-muted-foreground">
                       {selectedInvoiceDetail.items.length} item{selectedInvoiceDetail.items.length === 1 ? "" : "s"}
                     </span>
-                </div>
+                  </div>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
                       <thead className="bg-muted/40 text-left">
@@ -909,9 +960,9 @@ const Invoices = () => {
                           <th className="p-3 font-medium">Qty</th>
                           <th className="p-3 font-medium">Unit price</th>
                           <th className="p-3 font-medium">Line total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                        </tr>
+                      </thead>
+                      <tbody>
                         {selectedInvoiceDetail.items.map((item) => (
                           <tr key={item.id} className="border-t">
                             <td className="p-3 font-semibold">{item.item_name}</td>
@@ -948,26 +999,26 @@ const Invoices = () => {
                         )}
                         {detailCharges.map((charge) => (
                           <tr key={`${charge.label}-${charge.id ?? ""}`} className="border-t">
-                          <td className="p-3">
+                            <td className="p-3">
                               <span className="font-medium">{charge.label}</span>
                               {charge.label?.toLowerCase() === "initial amount" && (
                                 <span className="ml-2 text-xs text-muted-foreground">(Estimate)</span>
-                            )}
-                          </td>
+                              )}
+                            </td>
                             <td className="p-3 text-right font-semibold">
                               {formatCurrency(charge.amount)}
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                          </tr>
+                        ))}
                         <tr className="border-t font-semibold">
                           <td className="p-3">Total charges</td>
                           <td className="p-3 text-right">{formatCurrency(chargesTotal)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-3">
+                <div className="space-y-3">
                   <h3 className="text-lg font-semibold">Reductions</h3>
                   <div className="overflow-x-auto rounded-md border">
                     <table className="w-full text-sm">
@@ -975,9 +1026,9 @@ const Invoices = () => {
                         <tr>
                           <th className="p-3 font-medium">Category</th>
                           <th className="p-3 font-medium text-right">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                        </tr>
+                      </thead>
+                      <tbody>
                         {detailReductions.length === 0 && (
                           <tr>
                             <td colSpan={2} className="p-3 text-sm text-muted-foreground">
@@ -996,14 +1047,14 @@ const Invoices = () => {
                             <td className="p-3 text-right font-semibold">
                               {formatCurrency(reduction.amount)}
                             </td>
-                        </tr>
-                      ))}
+                          </tr>
+                        ))}
                         <tr className="border-t font-semibold">
                           <td className="p-3">Total reductions</td>
                           <td className="p-3 text-right">{formatCurrency(reductionsTotal)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
@@ -1024,8 +1075,8 @@ const Invoices = () => {
               </div>
 
               <div className="flex flex-col gap-3 border-t pt-4 md:flex-row">
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   className="md:flex-1"
                   onClick={() => {
                     setDetailOpen(false);
@@ -1255,6 +1306,247 @@ const Invoices = () => {
               disabled={deleteInvoiceMutation.isPending}
             >
               {deleteInvoiceMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Customer Preview Dialog */}
+      <Dialog
+        open={previewOpen}
+        onOpenChange={(open) => {
+          setPreviewOpen(open);
+          if (!open) {
+            setPreviewDetail(null);
+            setPreviewLabel("");
+            setPreviewLoading(false);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Invoice preview</DialogTitle>
+            <DialogDescription>
+              {previewLabel || "Select an invoice to preview the customer-facing layout."}
+            </DialogDescription>
+          </DialogHeader>
+          {previewLoading && (
+            <div className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+              Loading preview...
+            </div>
+          )}
+          {previewDetail && (
+            <div className="overflow-hidden rounded-lg border bg-background shadow-sm">
+              <div className="border-b bg-muted/20 p-6">
+                <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
+                  <div className="space-y-1">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Garage invoice</p>
+                    <p className="text-2xl font-bold text-foreground">
+                      {previewDetail.invoice_no ?? `Invoice #${previewDetail.id}`}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Issued on {formatDate(previewDetail.invoice_date)}
+                      {previewDetail.job_id ? ` • Job #${previewDetail.job_id}` : ""}
+                    </p>
+                  </div>
+                  <div className="space-y-2 text-right">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Amount due</p>
+                      <p className="text-2xl font-semibold text-foreground">{formatCurrency(previewFinalAmount)}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-6 border-b p-6 md:grid-cols-2">
+                <div className="space-y-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Bill to</p>
+                  <p className="text-base font-semibold text-foreground">
+                    {previewDetail.customer_name ?? "Walk-in customer"}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Please review the summary below. Contact us if you have any questions about this invoice.
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Payment summary</p>
+                    <div className="space-y-1 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Payment method</span>
+                      <span className="font-medium text-foreground">
+                        {previewDetail.payment_method ?? "Not specified"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Status</span>
+                      <span className="font-medium text-foreground">
+                        {previewStatusMeta ? previewStatusMeta.label : "Unpaid"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {previewDetail.items.length > 0 && (
+                <div className="border-b p-6">
+                  <h3 className="text-base font-semibold text-foreground">Services provided</h3>
+                  <p className="mb-3 text-sm text-muted-foreground">
+                    Detailed breakdown of labour and parts used during the job.
+                  </p>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr>
+                          <th className="p-3 font-medium">Description</th>
+                          <th className="p-3 font-medium text-right">Qty</th>
+                          <th className="p-3 font-medium text-right">Unit price</th>
+                          <th className="p-3 font-medium text-right">Line total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewDetail.items.map((item) => (
+                          <tr key={item.id} className="border-t">
+                            <td className="p-3 font-medium text-foreground">{item.item_name}</td>
+                            <td className="p-3 text-right text-muted-foreground">{item.quantity}</td>
+                            <td className="p-3 text-right text-muted-foreground">{formatCurrency(item.unit_price)}</td>
+                            <td className="p-3 text-right font-semibold text-foreground">
+                              {formatCurrency(item.line_total)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {(previewCharges.length > 0 || previewReductions.length > 0) && (
+                <div className="grid gap-6 border-b p-6 md:grid-cols-2">
+                  <div className="space-y-3">
+                    <h3 className="text-base font-semibold text-foreground">Additional charges</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Any supplemental labour, diagnostics, or consumables added to the invoice.
+                    </p>
+                    <div className="overflow-x-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                          <tr>
+                            <th className="p-3 font-medium">Description</th>
+                            <th className="p-3 font-medium text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewCharges.length === 0 && (
+                            <tr>
+                              <td colSpan={2} className="p-3 text-sm text-muted-foreground">
+                                No additional charges applied.
+                              </td>
+                            </tr>
+                          )}
+                          {previewCharges.map((charge) => (
+                            <tr key={`${charge.label}-${charge.id ?? ""}`} className="border-t">
+                              <td className="p-3 font-medium text-foreground">{charge.label}</td>
+                              <td className="p-3 text-right font-semibold text-foreground">
+                                {formatCurrency(charge.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="border-t font-semibold">
+                            <td className="p-3 text-foreground">Total charges</td>
+                            <td className="p-3 text-right text-foreground">{formatCurrency(previewChargesTotal)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <h3 className="text-base font-semibold text-foreground">Reductions & credits</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Discounts, advances, or other credits that reduce the balance.
+                    </p>
+                    <div className="overflow-x-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                          <tr>
+                            <th className="p-3 font-medium">Description</th>
+                            <th className="p-3 font-medium text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewReductions.length === 0 && (
+                            <tr>
+                              <td colSpan={2} className="p-3 text-sm text-muted-foreground">
+                                No reductions recorded.
+                              </td>
+                            </tr>
+                          )}
+                          {previewReductions.map((reduction) => (
+                            <tr key={`${reduction.label}-${reduction.id ?? ""}`} className="border-t">
+                              <td className="p-3 font-medium text-foreground">{reduction.label}</td>
+                              <td className="p-3 text-right font-semibold text-foreground">
+                                {formatCurrency(reduction.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="border-t font-semibold">
+                            <td className="p-3 text-foreground">Total reductions</td>
+                            <td className="p-3 text-right text-foreground">
+                              {formatCurrency(previewReductionsTotal)}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3 p-6">
+                <h3 className="text-base font-semibold text-foreground">Financial summary</h3>
+                <div className="space-y-2 rounded-md border border-muted bg-muted/10 p-4 text-sm">
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Charges</span>
+                    <span className="font-semibold text-foreground">{formatCurrency(previewChargesTotal)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Reductions & credits</span>
+                    <span className="font-semibold text-foreground">
+                      -{formatCurrency(previewReductionsTotal)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-t pt-3 text-lg font-bold text-foreground">
+                    <span>Balance due</span>
+                    <span>{formatCurrency(previewFinalAmount)}</span>
+                  </div>
+                </div>
+                {previewAdvanceReduction && (
+                  <p className="text-xs text-muted-foreground">
+                    Advance received: {formatCurrency(previewAdvanceReduction.amount)} (already reflected above).
+                  </p>
+                )}
+              </div>
+
+              {previewDetail.notes && (
+                <div className="border-t p-6">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Additional notes</p>
+                  <p className="mt-2 rounded-md border border-muted bg-muted/10 p-3 text-sm text-foreground">
+                    {previewDetail.notes}
+                  </p>
+                </div>
+              )}
+
+              <div className="border-t bg-muted/20 p-6 text-xs text-muted-foreground">
+                Thank you for choosing our garage. Please settle the balance by the agreed payment terms.{" "}
+                <span className="text-foreground">If you have already paid, kindly ignore this reminder.</span>
+              </div>
+            </div>
+          )}
+          {!previewDetail && !previewLoading && (
+            <p className="text-sm text-muted-foreground">Select an invoice to preview.</p>
+          )}
+          <div className="flex justify-end pt-4">
+            <Button variant="outline" onClick={() => setPreviewOpen(false)}>
+              Close
             </Button>
           </div>
         </DialogContent>
