@@ -1,20 +1,15 @@
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database("./workshop.db");
 
-const logTableResult = (tableName) => (err) => {
-    if (err) {
-        console.error(`${tableName} table error:`, err.message);
-    } else {
-        console.log(`${tableName} table ready`);
-    }
-};
+const log = (name) => (err) =>
+  err ? console.error(`${name} error:`, err.message) : console.log(`${name} ready`);
 
 db.serialize(() => {
-    // ----------------------------------
-    // Customers
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  CUSTOMERS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Customers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -23,15 +18,13 @@ db.serialize(() => {
             address TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    `,
-        logTableResult("Customers")
-    );
+    `, log("Customers"));
 
-    // ----------------------------------
-    // Vehicles (one per job selection)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  VEHICLES
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Vehicles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL,
@@ -44,27 +37,13 @@ db.serialize(() => {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(customer_id) REFERENCES Customers(id)
         );
-    `,
-        logTableResult("Vehicles")
-    );
+    `, log("Vehicles"));
 
-    db.run(
-        `
-        ALTER TABLE Vehicles
-        ADD COLUMN archived INTEGER DEFAULT 0;
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Vehicles add archived column error:", err.message);
-            }
-        }
-    );
 
-    // ----------------------------------
-    // Technicians
-    // ----------------------------------
-    db.run(
-        `
+    // ================================
+    //  TECHNICIANS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Technicians (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -72,40 +51,13 @@ db.serialize(() => {
             status TEXT CHECK(status IN ('Active', 'On Leave', 'Inactive')) DEFAULT 'Active',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    `,
-        logTableResult("Technicians")
-    );
+    `, log("Technicians"));
 
-    db.run(
-        `
-        ALTER TABLE Technicians
-        ADD COLUMN status TEXT CHECK(status IN ('Active', 'On Leave', 'Inactive')) DEFAULT 'Active';
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Technicians add status column error:", err.message);
-            }
-        }
-    );
 
-    db.run(
-        `
-        UPDATE Technicians
-        SET status = 'Active'
-        WHERE status IS NULL;
-    `,
-        (err) => {
-            if (err) {
-                console.error("Technicians status backfill error:", err.message);
-            }
-        }
-    );
-
-    // ----------------------------------
-    // Jobs (core work orders)
-    // ----------------------------------
-    db.run(
-        `
+    // ================================
+    //  JOBS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL,
@@ -123,39 +75,13 @@ db.serialize(() => {
             FOREIGN KEY(customer_id) REFERENCES Customers(id),
             FOREIGN KEY(vehicle_id) REFERENCES Vehicles(id)
         );
-    `,
-        logTableResult("Jobs")
-    );
+    `, log("Jobs"));
 
-    db.run(
-        `
-        ALTER TABLE Jobs
-        ADD COLUMN invoice_created INTEGER DEFAULT 0;
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Jobs add invoice_created column error:", err.message);
-            }
-        }
-    );
 
-    db.run(
-        `
-        ALTER TABLE Jobs
-        ADD COLUMN category TEXT;
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Jobs add category column error:", err.message);
-            }
-        }
-    );
-
-    // ----------------------------------
-    // JobTechnicians (jobs ↔ technicians m2m)
-    // ----------------------------------
-    db.run(
-        `
+    // ================================
+    //  JOB ↔ TECHNICIANS (M2M)
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS JobTechnicians (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id INTEGER NOT NULL,
@@ -164,15 +90,13 @@ db.serialize(() => {
             FOREIGN KEY(job_id) REFERENCES Jobs(id),
             FOREIGN KEY(technician_id) REFERENCES Technicians(id)
         );
-    `,
-        logTableResult("JobTechnicians")
-    );
+    `, log("JobTechnicians"));
 
-    // ----------------------------------
-    // InventoryItems (consumable / non-consumable / bulk)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  INVENTORY ITEMS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS InventoryItems (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -185,15 +109,13 @@ db.serialize(() => {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    `,
-        logTableResult("InventoryItems")
-    );
+    `, log("InventoryItems"));
 
-    // ----------------------------------
-    // Suppliers
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  SUPPLIERS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Suppliers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -204,15 +126,13 @@ db.serialize(() => {
             notes TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    `,
-        logTableResult("Suppliers")
-    );
+    `, log("Suppliers"));
 
-    // ----------------------------------
-    // SupplierPurchases (stock intake for consumables)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  SUPPLIER PURCHASES (Stock Intake)
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS SupplierPurchases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             supplier_id INTEGER NOT NULL,
@@ -228,15 +148,13 @@ db.serialize(() => {
             FOREIGN KEY(supplier_id) REFERENCES Suppliers(id),
             FOREIGN KEY(inventory_item_id) REFERENCES InventoryItems(id)
         );
-    `,
-        logTableResult("SupplierPurchases")
-    );
+    `, log("SupplierPurchases"));
 
-    // ----------------------------------
-    // JobItems (estimation/service breakdown)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  JOB ITEMS (Estimate breakdown)
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS JobItems (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id INTEGER NOT NULL,
@@ -250,15 +168,13 @@ db.serialize(() => {
             FOREIGN KEY(job_id) REFERENCES Jobs(id),
             FOREIGN KEY(inventory_item_id) REFERENCES InventoryItems(id)
         );
-    `,
-        logTableResult("JobItems")
-    );
+    `, log("JobItems"));
 
-    // ----------------------------------
-    // Invoices (one per completed job)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  INVOICES
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id INTEGER NOT NULL UNIQUE,
@@ -275,15 +191,13 @@ db.serialize(() => {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(job_id) REFERENCES Jobs(id)
         );
-    `,
-        logTableResult("Invoices")
-    );
+    `, log("Invoices"));
 
-    // ----------------------------------
-    // InvoiceItems (line items attached to invoice)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  INVOICE ITEMS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS InvoiceItems (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoice_id INTEGER NOT NULL,
@@ -297,15 +211,13 @@ db.serialize(() => {
             FOREIGN KEY(invoice_id) REFERENCES Invoices(id),
             FOREIGN KEY(inventory_item_id) REFERENCES InventoryItems(id)
         );
-    `,
-        logTableResult("InvoiceItems")
-    );
+    `, log("InvoiceItems"));
 
-    // ----------------------------------
-    // InvoiceExtraItems (charges / deductions)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  EXTRA INVOICE CHARGES/DEDUCTIONS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS InvoiceExtraItems (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoice_id INTEGER NOT NULL,
@@ -315,15 +227,13 @@ db.serialize(() => {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(invoice_id) REFERENCES Invoices(id)
         );
-    `,
-        logTableResult("InvoiceExtraItems")
-    );
+    `, log("InvoiceExtraItems"));
 
-    // ----------------------------------
-    // Expenses (manual operating expenses)
-    // ----------------------------------
-    db.run(
-        `
+
+    // ================================
+    //  EXPENSES
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             description TEXT NOT NULL,
@@ -335,64 +245,13 @@ db.serialize(() => {
             remarks TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    `,
-        logTableResult("Expenses")
-    );
+    `, log("Expenses"));
 
-    db.run(
-        `
-        ALTER TABLE Expenses
-        ADD COLUMN payment_status TEXT CHECK(payment_status IN ('pending', 'paid', 'unpaid')) DEFAULT 'pending';
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Expenses add payment_status column error:", err.message);
-            }
-        }
-    );
 
-    db.run(
-        `
-        ALTER TABLE Expenses
-        ADD COLUMN payment_method TEXT;
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Expenses add payment_method column error:", err.message);
-            }
-        }
-    );
-
-    db.run(
-        `
-        ALTER TABLE Expenses
-        ADD COLUMN remarks TEXT;
-    `,
-        (err) => {
-            if (err && !/duplicate column name/i.test(err.message)) {
-                console.error("Expenses add remarks column error:", err.message);
-            }
-        }
-    );
-
-    db.run(
-        `
-        UPDATE Expenses
-        SET payment_status = 'pending'
-        WHERE payment_status IS NULL;
-    `,
-        (err) => {
-            if (err) {
-                console.error("Expenses payment_status backfill error:", err.message);
-            }
-        }
-    );
-
-    // ----------------------------------
-    // Notifications (system events)
-    // ----------------------------------
-    db.run(
-        `
+    // ================================
+    //  NOTIFICATIONS
+    // ================================
+    db.run(`
         CREATE TABLE IF NOT EXISTS Notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -401,9 +260,8 @@ db.serialize(() => {
             is_read INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    `,
-        logTableResult("Notifications")
-    );
+    `, log("Notifications"));
+
 });
 
 db.close();
