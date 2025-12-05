@@ -37,7 +37,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useToast } from "@/hooks/use-toast";
-import { apiFetch } from "@/lib/api";
+import { API_BASE_URL, apiFetch } from "@/lib/api";
 import {
   DEFAULT_PAYMENT_METHOD_OPTIONS,
   PAYMENT_METHOD_NONE_VALUE,
@@ -56,6 +56,7 @@ type InvoiceSummary = {
   items_total: number | null;
   total_charges: number | null;
   total_deductions: number | null;
+  initial_amount: number | null;
   notes: string | null;
   customer_name: string | null;
 };
@@ -135,6 +136,7 @@ const Invoices = () => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<number | null>(null);
   const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
@@ -262,6 +264,44 @@ const Invoices = () => {
 
   const handleInvoiceRowClick = (invoice: InvoiceSummary) => {
     openInvoiceDetail(invoice);
+  };
+
+  const handleDownloadInvoice = async (invoice: InvoiceSummary) => {
+    setDownloadingInvoiceId(invoice.id);
+    try {
+      const response = await fetch(`${API_BASE_URL}/invoices/${invoice.id}/pdf`, {
+        method: "GET",
+      });
+      if (!response.ok) {
+        throw new Error(`Unable to download invoice (status ${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      const safeInvoiceNo = (invoice.invoice_no ?? `invoice-${invoice.id}`)
+        .toString()
+        .replace(/[^a-zA-Z0-9-_]/g, "_");
+      anchor.download = `${safeInvoiceNo}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+
+    toast({
+        title: "Download started",
+        description: `Invoice ${invoice.invoice_no ?? `#${invoice.id}`} is being downloaded.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Download failed",
+        description: error instanceof Error ? error.message : "Unable to download invoice PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingInvoiceId(null);
+    }
   };
 
   const openEditModal = () => {
@@ -939,7 +979,13 @@ const Invoices = () => {
                             </form>
                           </DialogContent>
                         </Dialog>
-                        <Button variant="ghost" size="icon" title="Download">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Download"
+                          disabled={downloadingInvoiceId === invoice.id}
+                          onClick={() => handleDownloadInvoice(invoice)}
+                        >
                           <Download className="h-4 w-4" />
                         </Button>
                       </div>
@@ -1310,9 +1356,9 @@ const Invoices = () => {
                     </Button>
                   </div>
                 ))}
-                  </div>
+                </div>
 
-              <div className="space-y-4">
+                <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="text-base font-semibold">Reductions</Label>
                   <Button
@@ -1326,7 +1372,7 @@ const Invoices = () => {
                   >
                     Add reduction
                   </Button>
-                </div>
+                  </div>
                 {editReductions.length === 0 && (
                   <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
                     No reductions yet. Add discounts or advances collected here.
@@ -1347,10 +1393,10 @@ const Invoices = () => {
                           </span>
                         )}
                       </p>
-                    </div>
+                  </div>
                     <div className="rounded-md border border-dashed border-muted/80 bg-muted/20 px-3 py-2 text-right text-sm font-semibold text-foreground">
                       {formatCurrency(Number(entry.amount || 0))}
-                    </div>
+                  </div>
                     <Button
                       type="button"
                       variant="ghost"
@@ -1361,7 +1407,7 @@ const Invoices = () => {
                     >
                       Remove
                     </Button>
-                  </div>
+                </div>
                 ))}
             </div>
             
@@ -1691,7 +1737,7 @@ const Invoices = () => {
 
             {addChargeMode === "manual" ? (
                 <div className="space-y-4">
-                  <div className="space-y-2">
+                <div className="space-y-2">
                   <Label htmlFor="manualLabel">Description</Label>
                   <Input
                     id="manualLabel"
@@ -1699,8 +1745,8 @@ const Invoices = () => {
                     value={addChargeLabel}
                     onChange={(event) => setAddChargeLabel(event.target.value)}
                   />
-                  </div>
-                  <div className="space-y-2">
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="manualAmount">Amount (LKR)</Label>
                   <Input
                     id="manualAmount"
@@ -1710,11 +1756,11 @@ const Invoices = () => {
                     value={addChargeAmount}
                     onChange={(event) => setAddChargeAmount(event.target.value)}
                   />
-                  </div>
+                </div>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="space-y-2">
+                <div className="space-y-2">
                   <Label>Inventory item</Label>
                   <Popover open={inventoryPickerOpen} onOpenChange={setInventoryPickerOpen}>
                     <PopoverTrigger asChild>
@@ -1759,7 +1805,7 @@ const Invoices = () => {
 
                 {selectedInventoryOption && (
                   <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
+                <div className="space-y-2">
                       <Label htmlFor="inventoryQuantity">Quantity</Label>
                       <Input
                         id="inventoryQuantity"
@@ -1769,7 +1815,7 @@ const Invoices = () => {
                         value={addChargeQuantity}
                         onChange={(event) => setAddChargeQuantity(event.target.value)}
                       />
-                  </div>
+                </div>
                   <div className="space-y-2">
                       <Label htmlFor="inventoryRate">Unit price (LKR)</Label>
                       <Input
@@ -1780,21 +1826,21 @@ const Invoices = () => {
                         value={addChargeRate}
                         onChange={(event) => setAddChargeRate(event.target.value)}
                       />
-                  </div>
                 </div>
+              </div>
               )}
             </div>
             )}
             
             <div className="flex justify-end gap-3">
               <Button type="button" variant="outline" onClick={() => setAddChargeOpen(false)}>
-                Cancel
-              </Button>
+                  Cancel
+                </Button>
               <Button type="submit">
                 {addChargeMode === "manual" ? "Add charge" : "Add inventory item"}
-              </Button>
-            </div>
-          </form>
+                </Button>
+              </div>
+            </form>
         </DialogContent>
       </Dialog>
 

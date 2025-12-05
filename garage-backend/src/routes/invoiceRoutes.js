@@ -451,84 +451,535 @@ const generateInvoicePdfBuffer = (invoice) =>
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
 
-        doc.fontSize(20).text("Workshop Invoice", { align: "center" });
-        doc.moveDown();
+        const formatCurrency = (value) =>
+            `LKR ${Number(value ?? 0).toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            })}`;
 
-        doc.fontSize(12).text(`Invoice #: ${invoice.invoice_no || invoice.id}`);
-        doc.text(`Date: ${new Date(invoice.invoice_date).toLocaleDateString()}`);
-        if (invoice.payment_status) {
-            doc.text(`Payment Status: ${invoice.payment_status}`);
-        }
-        if (invoice.payment_method) {
-            doc.text(`Payment Method: ${invoice.payment_method}`);
-        }
-        doc.moveDown();
+        const formatDate = (value) => {
+            if (!value) return "—";
+            const parsed = new Date(value);
+            return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString();
+        };
 
-        if (invoice.customer_name) {
-            doc.text("Bill To:");
-            doc.text(invoice.customer_name);
-            if (invoice.customer_email) doc.text(invoice.customer_email);
-            if (invoice.customer_phone) doc.text(invoice.customer_phone);
-            if (invoice.customer_address) doc.text(invoice.customer_address);
-            doc.moveDown();
-        }
+        const capitalize = (value) =>
+            typeof value === "string" && value.length
+                ? value.charAt(0).toUpperCase() + value.slice(1)
+                : value ?? "";
 
-        doc.text("Job Details:");
-        if (invoice.job_description) doc.text(`Description: ${invoice.job_description}`);
-        if (invoice.job_status) doc.text(`Status: ${invoice.job_status}`);
-        doc.moveDown();
+        const items = invoice.items ?? [];
+        const charges = invoice.charges ?? [];
+        const reductions = invoice.reductions ?? [];
 
-        if (invoice.items.length) {
-            doc.text("Items:");
+        const servicesTotal = items.reduce((sum, item) => sum + Number(item.line_total ?? 0), 0);
+        const chargesTotal = charges.reduce((sum, entry) => sum + Number(entry.amount ?? 0), 0);
+        const reductionsTotal = reductions.reduce((sum, entry) => sum + Number(entry.amount ?? 0), 0);
+        const balanceDue =
+            invoice.final_total ?? servicesTotal + chargesTotal - reductionsTotal;
+
+        const pageWidth =
+            doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        const cardGap = 20;
+        const columnWidth = (pageWidth - cardGap) / 2;
+
+        const CARD_BG = "#f9fafb";
+        const CARD_BORDER = "#e5e7eb";
+        const TEXT_PRIMARY = "#111827";
+        const TEXT_MUTED = "#6b7280";
+
+        const setFont = ({ bold = false, size = 10, color = TEXT_PRIMARY } = {}) => {
+            doc.font(bold ? "Helvetica-Bold" : "Helvetica");
+            doc.fontSize(size);
+            doc.fillColor(color);
+        };
+
+        const drawRoundedCard = (x, y, width, height) => {
+            doc.save();
+            doc.lineWidth(1);
+            doc.strokeColor(CARD_BORDER);
+            doc.fillColor(CARD_BG);
+            doc.roundedRect(x, y, width, height, 8).fillAndStroke(CARD_BG, CARD_BORDER);
+            doc.restore();
+        };
+
+        const drawHorizontalRule = (x1, y, x2, color = CARD_BORDER) => {
+            doc.save();
+            doc.strokeColor(color);
+            doc.moveTo(x1, y).lineTo(x2, y).stroke();
+            doc.restore();
+        };
+
+        const renderBlock = (block, x, width, startY) => {
+            let currentY = startY;
+            if (block.label) {
+                setFont({ size: 9, color: TEXT_MUTED });
+                doc.y = currentY;
+                doc.text(block.label, x, currentY, { width });
+                currentY = doc.y + 4;
+            }
+
+            (block.lines ?? []).forEach((line) => {
+                setFont({
+                    size: line.size ?? 11,
+                    bold: line.bold ?? false,
+                    color: line.color ?? TEXT_PRIMARY,
+                });
+                doc.y = currentY;
+                doc.text(line.text, x, currentY, { width });
+                currentY = doc.y + (line.gap ?? 6);
+            });
+
+            return currentY;
+        };
+
+        const writeTwoColumnGroup = (left, right, options = {}) => {
+            const startY = doc.y;
+            const leftBottom = renderBlock(
+                left,
+                doc.page.margins.left,
+                columnWidth,
+                startY
+            );
+            const rightBottom = renderBlock(
+                right,
+                doc.page.margins.left + columnWidth + cardGap,
+                columnWidth,
+                startY
+            );
+
+            doc.y = Math.max(leftBottom, rightBottom) + (options.gap ?? 18);
+            doc.x = doc.page.margins.left;
+        };
+
+        const drawTableSection = ({
+            title,
+            headers,
+            rows,
+            columnWidths,
+            alignments = [],
+            emptyMessage,
+        }) => {
+            setFont({ size: 12, bold: true });
+            doc.text(title, doc.page.margins.left, doc.y);
             doc.moveDown(0.5);
 
-            const tableTop = doc.y;
-            doc.text("Item", 40, tableTop);
-            doc.text("Qty", 240, tableTop);
-            doc.text("Unit Price", 300, tableTop);
-            doc.text("Line Total", 420, tableTop);
+            if (!rows.length) {
+                setFont({ size: 10, color: TEXT_MUTED });
+                doc.text(
+                    emptyMessage ?? "No records available.",
+                    doc.page.margins.left,
+                    doc.y
+                );
+                doc.moveDown();
+                return;
+            }
 
-            doc.moveTo(40, tableTop + 15).lineTo(560, tableTop + 15).stroke();
-
-            let position = tableTop + 25;
-            invoice.items.forEach((item) => {
-                doc.text(item.item_name, 40, position, { width: 180 });
-                doc.text(item.quantity.toString(), 240, position);
-                doc.text(item.unit_price.toFixed(2), 300, position);
-                doc.text(item.line_total.toFixed(2), 420, position);
-                position += 20;
+            const startX = doc.page.margins.left;
+            const columnPositions = [];
+            let offset = startX;
+            columnWidths.forEach((width) => {
+                columnPositions.push(offset);
+                offset += width;
             });
-            doc.moveDown();
+            const tableWidth = columnWidths.reduce((sum, width) => sum + width, 0);
+
+            setFont({ size: 9, color: TEXT_MUTED, bold: true });
+            const headerY = doc.y;
+            let headerBottom = headerY;
+            headers.forEach((header, idx) => {
+                doc.y = headerY;
+                doc.text(header, columnPositions[idx], headerY, {
+                    width: columnWidths[idx],
+                    align: alignments[idx] ?? "left",
+                });
+                headerBottom = Math.max(headerBottom, doc.y);
+            });
+            let currentY = headerBottom + 4;
+            drawHorizontalRule(startX, currentY - 2, startX + tableWidth);
+
+            setFont({ size: 10, color: TEXT_PRIMARY });
+            rows.forEach((row) => {
+                let rowHeight = 0;
+                row.forEach((cell, idx) => {
+                    doc.y = currentY;
+                    const before = doc.y;
+                    doc.text(cell, columnPositions[idx], currentY, {
+                        width: columnWidths[idx],
+                        align: alignments[idx] ?? "left",
+                    });
+                    rowHeight = Math.max(rowHeight, doc.y - before);
+                });
+                currentY += (rowHeight || 12) + 4;
+            });
+
+            drawHorizontalRule(startX, currentY - 4, startX + tableWidth);
+            doc.y = currentY + 8;
+        };
+
+        const measureTableCardHeight = (rows) => {
+            const padding = 16;
+            const headerHeight = 18;
+            const rowHeight = 18;
+            const subLabelExtra = 12;
+            const footerHeight = 22;
+
+            const contentRows = rows.length ? rows : [{ placeholder: true }];
+            const rowsHeight = contentRows.reduce(
+                (sum, row) => sum + rowHeight + (row.subLabel ? subLabelExtra : 0),
+                0
+            );
+
+            return padding * 2 + headerHeight + rowsHeight + footerHeight;
+        };
+
+        const drawTableCard = ({
+            x,
+            y,
+            width,
+            title,
+            rows,
+            footerLabel,
+            footerValue,
+            emptyMessage,
+        }) => {
+            const padding = 16;
+            const amountColumnWidth = 90;
+            const labelWidth = width - padding * 2 - amountColumnWidth;
+
+            const rowsForCard = rows.length
+                ? rows
+                : [{ placeholder: true, label: emptyMessage ?? "No records.", amount: "" }];
+            const cardHeight = measureTableCardHeight(rowsForCard);
+
+            drawRoundedCard(x, y, width, cardHeight);
+
+            let currentY = y + padding;
+
+            setFont({ size: 12, bold: true });
+            doc.y = currentY;
+            doc.text(title, x + padding, currentY, { width: width - padding * 2 });
+            currentY = doc.y + 6;
+
+            setFont({ size: 9, color: TEXT_MUTED, bold: true });
+            doc.y = currentY;
+            doc.text("Category", x + padding, currentY, { width: labelWidth });
+            doc.y = currentY;
+            doc.text("Amount", x + width - padding - amountColumnWidth, currentY, {
+                width: amountColumnWidth,
+                align: "right",
+            });
+            currentY = Math.max(doc.y, currentY) + 4;
+            drawHorizontalRule(x + padding, currentY, x + width - padding);
+            currentY += 4;
+
+            rowsForCard.forEach((row) => {
+                const rowStart = currentY;
+                setFont({ size: 10, color: row.placeholder ? TEXT_MUTED : TEXT_PRIMARY });
+                doc.y = rowStart;
+                doc.text(row.label ?? "", x + padding, rowStart, { width: labelWidth });
+                const labelBottom = doc.y;
+
+                setFont({ size: 10, color: TEXT_PRIMARY });
+                doc.y = rowStart;
+                doc.text(row.amount ?? "", x + width - padding - amountColumnWidth, rowStart, {
+                    width: amountColumnWidth,
+                    align: "right",
+                });
+                const amountBottom = doc.y;
+
+                currentY = Math.max(labelBottom, amountBottom);
+
+                if (row.subLabel) {
+                    setFont({ size: 8, color: TEXT_MUTED });
+                    doc.y = currentY;
+                    doc.text(row.subLabel, x + padding, currentY, { width: labelWidth });
+                    currentY = doc.y;
+                }
+
+                currentY += 6;
+            });
+
+            drawHorizontalRule(x + padding, currentY - 2, x + width - padding);
+            setFont({ size: 10, color: TEXT_MUTED });
+            doc.y = currentY + 4;
+            doc.text(footerLabel, x + padding, doc.y, { width: labelWidth });
+            setFont({ size: 11, bold: true });
+            doc.y = currentY + 4;
+            doc.text(footerValue, x + width - padding - amountColumnWidth, doc.y, {
+                width: amountColumnWidth,
+                align: "right",
+            });
+
+            return y + cardHeight;
+        };
+
+        const drawSummaryCard = ({ x, y, width, rows }) => {
+            const padding = 16;
+            const rowHeight = 18;
+            const cardHeight = padding * 2 + rows.length * rowHeight + 6;
+
+            drawRoundedCard(x, y, width, cardHeight);
+
+            let currentY = y + padding;
+            const valueWidth = 140;
+            const labelWidth = width - padding * 2 - valueWidth;
+
+            rows.forEach((row) => {
+                setFont({ size: 10, color: TEXT_MUTED });
+                doc.y = currentY;
+                doc.text(row.label, x + padding, currentY, { width: labelWidth });
+                setFont({
+                    size: row.size ?? 11,
+                    bold: row.bold ?? false,
+                    color: row.color ?? TEXT_PRIMARY,
+                });
+                doc.y = currentY;
+                doc.text(row.value, x + width - padding - valueWidth, currentY, {
+                    width: valueWidth,
+                    align: "right",
+                });
+                currentY = doc.y + 4;
+            });
+
+            return y + cardHeight;
+        };
+
+        setFont({ bold: true, size: 22 });
+        doc.text("Garage Invoice", { align: "center" });
+        doc.moveDown(1.2);
+
+        writeTwoColumnGroup(
+            {
+                label: "Invoice number",
+                lines: [
+                    {
+                        text: invoice.invoice_no ? `${invoice.invoice_no}` : `Invoice #${invoice.id}`,
+                        bold: true,
+                        size: 14,
+                    },
+                    {
+                        text: `Issued on ${formatDate(invoice.invoice_date)}${
+                            invoice.job_id ? ` • Job #${invoice.job_id}` : ""
+                        }`,
+                        size: 10,
+                        color: TEXT_MUTED,
+                    },
+                ],
+            },
+            {
+                label: "Amount due",
+                lines: [
+                    {
+                        text: formatCurrency(balanceDue),
+                        bold: true,
+                        size: 18,
+                    },
+                    {
+                        text: `Status: ${capitalize(invoice.payment_status ?? "unpaid")}`,
+                        size: 10,
+                        color: TEXT_MUTED,
+                    },
+                    {
+                        text: `Payment method: ${invoice.payment_method ?? "Not specified"}`,
+                        size: 10,
+                        color: TEXT_MUTED,
+                    },
+                ],
+            },
+            { gap: 20 }
+        );
+
+        writeTwoColumnGroup(
+            {
+                label: "Bill to",
+                lines: [
+                    {
+                        text: invoice.customer_name ?? "Walk-in customer",
+                        size: 12,
+                        bold: true,
+                    },
+                    ...(invoice.customer_email
+                        ? [
+                              {
+                                  text: invoice.customer_email,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    ...(invoice.customer_phone
+                        ? [
+                              {
+                                  text: invoice.customer_phone,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    ...(invoice.customer_address
+                        ? [
+                              {
+                                  text: invoice.customer_address,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    {
+                        text: "Please review the summary below. Contact us if you have any questions about this invoice.",
+                        size: 9,
+                        color: TEXT_MUTED,
+                    },
+                ],
+            },
+            {
+                label: "Job summary",
+                lines: [
+                    ...(invoice.job_description
+                        ? [
+                              {
+                                  text: invoice.job_description,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    ...(invoice.initial_amount !== undefined && invoice.initial_amount !== null
+                        ? [
+                              {
+                                  text: `Initial estimate: ${formatCurrency(invoice.initial_amount)}`,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    ...(invoice.advance_amount !== undefined && invoice.advance_amount !== null
+                        ? [
+                              {
+                                  text: `Advance received: ${formatCurrency(invoice.advance_amount)}`,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    {
+                        text: `Items: ${items.length} • Charges: ${charges.length} • Reductions: ${reductions.length}`,
+                        size: 9,
+                        color: TEXT_MUTED,
+                    },
+                ],
+            },
+            { gap: 26 }
+        );
+
+        if (items.length) {
+            const serviceRows = items.map((item) => [
+                item.item_name ?? "Item",
+                String(item.quantity ?? 0),
+                formatCurrency(item.unit_price ?? 0),
+                formatCurrency(item.line_total ?? 0),
+            ]);
+            drawTableSection({
+                title: "Services provided",
+                headers: ["Description", "Qty", "Unit price", "Amount"],
+                rows: serviceRows,
+                columnWidths: [260, 60, 100, 100],
+                alignments: ["left", "right", "right", "right"],
+                emptyMessage: "No services recorded.",
+            });
         }
 
-        if (invoice.charges && invoice.charges.length) {
-            doc.text("Charges:");
-            invoice.charges.forEach((entry) => {
-                doc.text(`${entry.label}: ${Number(entry.amount).toFixed(2)}`, { indent: 20 });
-            });
-            doc.moveDown();
-        }
+        const cardStartY = doc.y;
+        const leftCardX = doc.page.margins.left;
+        const rightCardX = leftCardX + columnWidth + cardGap;
 
-        if (invoice.reductions && invoice.reductions.length) {
-            doc.text("Reductions:");
-            invoice.reductions.forEach((entry) => {
-                doc.text(`${entry.label}: ${Number(entry.amount).toFixed(2)}`, { indent: 20 });
-            });
-            doc.moveDown();
-        }
+        const chargesRows = charges.map((entry) => ({
+            label: entry.label ?? "Charge",
+            amount: formatCurrency(entry.amount ?? 0),
+        }));
 
-        doc.text(`Items Total: ${Number(invoice.items_total || 0).toFixed(2)}`);
-        doc.text(`Additional Charges: ${Number(invoice.total_charges || 0).toFixed(2)}`);
-        doc.text(`Deductions: ${Number(invoice.total_deductions || 0).toFixed(2)}`);
-        doc.moveDown();
-        doc.fontSize(14).text(`Final Total: ${Number(invoice.final_total || 0).toFixed(2)}`, {
-            align: "right",
+        const reductionsRows = reductions.map((entry) => {
+            const lowerLabel = (entry.label ?? "").trim().toLowerCase();
+            const isAdvance = lowerLabel === "advance";
+            return {
+                label: entry.label ?? "Reduction",
+                amount: formatCurrency(entry.amount ?? 0),
+                subLabel: isAdvance ? "(Advance)" : undefined,
+            };
         });
 
+        const leftCardBottom = drawTableCard({
+            x: leftCardX,
+            y: cardStartY,
+            width: columnWidth,
+            title: "Charges",
+            rows: chargesRows,
+            footerLabel: "Total charges",
+            footerValue: formatCurrency(chargesTotal),
+            emptyMessage: "No additional charges recorded.",
+        });
+
+        const rightCardBottom = drawTableCard({
+            x: rightCardX,
+            y: cardStartY,
+            width: columnWidth,
+            title: "Reductions",
+            rows: reductionsRows,
+            footerLabel: "Total reductions",
+            footerValue: formatCurrency(reductionsTotal),
+            emptyMessage: "No reductions recorded.",
+        });
+
+        doc.y = Math.max(leftCardBottom, rightCardBottom) + 24;
+
+        const summaryBottom = drawSummaryCard({
+            x: doc.page.margins.left,
+            y: doc.y,
+            width: pageWidth,
+            rows: [
+                { label: "Services total", value: formatCurrency(servicesTotal) },
+                { label: "Charges", value: formatCurrency(chargesTotal) },
+                {
+                    label: "Reductions & credits",
+                    value: `-${formatCurrency(reductionsTotal)}`,
+                },
+                {
+                    label: "Balance due",
+                    value: formatCurrency(balanceDue),
+                    bold: true,
+                    size: 13,
+                },
+            ],
+        });
+        doc.y = summaryBottom + 24;
+
         if (invoice.notes) {
-            doc.moveDown();
-            doc.fontSize(10).text(`Notes: ${invoice.notes}`);
+            setFont({ size: 12, bold: true });
+            doc.text("Additional notes", doc.page.margins.left, doc.y, { align: "left" });
+            doc.moveDown(0.3);
+            setFont({ size: 10, color: TEXT_MUTED });
+            doc.text(invoice.notes, doc.page.margins.left, doc.y, {
+                width: pageWidth,
+                align: "left",
+            });
+            doc.moveDown(1);
         }
+
+        setFont({ size: 9, color: TEXT_MUTED });
+        doc.text(
+            "Thank you for choosing our garage.",
+            doc.page.margins.left,
+            doc.y,
+            { width: pageWidth, align: "center" }
+        );
+        doc.moveDown(0.6);
+        doc.text(
+            "Please settle the balance by the agreed payment terms. If you have already paid, kindly ignore this reminder.",
+            doc.page.margins.left,
+            doc.y,
+            { width: pageWidth, align: "center" }
+        );
 
         doc.end();
     });
