@@ -26,8 +26,8 @@ const createNotification = async ({ title, message, type }) => {
 
     await runAsync(
         `
-        INSERT INTO Notifications (title, message, type)
-        VALUES (?, ?, ?)
+        INSERT INTO Notifications (title, message, type, created_at)
+        VALUES (?, ?, ?, datetime('now', 'localtime'))
     `,
         [trimmedTitle, trimmedMessage, type || null]
     );
@@ -76,11 +76,24 @@ const notifyLowStockIfNeeded = async (inventoryItemId) => {
     }
 };
 
+const purgeOldNotifications = async (olderThanDays = 60) => {
+    if (!Number.isFinite(olderThanDays) || olderThanDays <= 0) {
+        return 0;
+    }
+
+    const result = await runAsync(
+        `
+        DELETE FROM Notifications
+        WHERE created_at < DATETIME('now', ?)
+    `,
+        [`-${Math.floor(olderThanDays)} days`]
+    );
+
+    return result?.changes ?? 0;
+};
+
 module.exports = {
     createNotification,
     notifyLowStockIfNeeded,
+    purgeOldNotifications,
 };
-
-
-
-

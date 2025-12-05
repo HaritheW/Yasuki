@@ -112,6 +112,7 @@ db.serialize(() => {
             vehicle_id INTEGER NOT NULL,
             description TEXT,
             notes TEXT,
+            category TEXT,
             initial_amount REAL,
             advance_amount REAL,
             job_status TEXT CHECK(job_status IN ('Pending', 'In Progress', 'Completed', 'Cancelled')) DEFAULT 'Pending',
@@ -134,6 +135,18 @@ db.serialize(() => {
         (err) => {
             if (err && !/duplicate column name/i.test(err.message)) {
                 console.error("Jobs add invoice_created column error:", err.message);
+            }
+        }
+    );
+
+    db.run(
+        `
+        ALTER TABLE Jobs
+        ADD COLUMN category TEXT;
+    `,
+        (err) => {
+            if (err && !/duplicate column name/i.test(err.message)) {
+                console.error("Jobs add category column error:", err.message);
             }
         }
     );

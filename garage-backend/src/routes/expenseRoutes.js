@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
+const { createNotification } = require("../utils/notifications");
 
 const VALID_PAYMENT_STATUSES = ["pending", "paid", "unpaid"];
 
@@ -28,6 +29,14 @@ const normalizeStatus = (status) => {
         throw error;
     }
     return normalized;
+};
+
+const safeNotify = async (payload) => {
+    try {
+        await createNotification(payload);
+    } catch (error) {
+        console.error("Expense notification error:", error.message);
+    }
 };
 
 // Create expense
@@ -69,17 +78,23 @@ router.post("/", (req, res) => {
             remarks || null,
         ],
         function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.status(201).json({
-            id: this.lastID,
-            description,
-            category,
-            amount: amountValue,
-            expense_date: expense_date || new Date().toISOString(),
+            if (err) return res.status(500).json({ error: err.message });
+            const expensePayload = {
+                id: this.lastID,
+                description,
+                category,
+                amount: amountValue,
+                expense_date: expense_date || new Date().toISOString(),
                 payment_status: statusValue,
                 payment_method: payment_method || null,
                 remarks: remarks || null,
-        });
+            };
+            safeNotify({
+                title: "Expense recorded",
+                message: `${description} logged for ${amountValue.toFixed(2)}.`,
+                type: "expense",
+            });
+            res.status(201).json(expensePayload);
         }
     );
 });
@@ -187,6 +202,34 @@ router.put("/:id", (req, res) => {
             if (err) return res.status(500).json({ error: err.message });
             db.get("SELECT * FROM Expenses WHERE id = ?", [id], (selectErr, row) => {
                 if (selectErr) return res.status(500).json({ error: selectErr.message });
+
+                const changes = [];
+                if (row.description !== existing.description) changes.push(`description updated`);
+                if (row.category !== existing.category) changes.push(`category → ${row.category ?? "none"}`);
+                if (row.amount !== existing.amount) changes.push(`amount → ${row.amount.toFixed(2)}`);
+                if (row.expense_date !== existing.expense_date)
+                    changes.push(`date → ${row.expense_date}`);
+                if (row.payment_status !== existing.payment_status)
+                    changes.push(
+                        `status ${existing.payment_status ?? "pending"} → ${row.payment_status}`
+                    );
+                if (row.payment_method !== existing.payment_method)
+                    changes.push(
+                        row.payment_method
+                            ? `payment method → ${row.payment_method}`
+                            : "payment method cleared"
+                    );
+                if (row.remarks !== existing.remarks)
+                    changes.push(row.remarks ? "remarks updated" : "remarks cleared");
+
+                if (changes.length > 0) {
+                    safeNotify({
+                        title: "Expense updated",
+                        message: `Expense ${row.description}: ${changes.join(", ")}.`,
+                        type: "expense",
+                    });
+                }
+
                 res.json(row);
             });
         }
@@ -198,12 +241,24 @@ router.put("/:id", (req, res) => {
 router.delete("/:id", (req, res) => {
     const { id } = req.params;
 
-    db.run("DELETE FROM Expenses WHERE id = ?", [id], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) {
-            return res.status(404).json({ error: "Expense not found" });
-        }
-        res.json({ message: "Expense deleted" });
+    db.get("SELECT * FROM Expenses WHERE id = ?", [id], (lookupErr, existing) => {
+        if (lookupErr) return res.status(500).json({ error: lookupErr.message });
+        if (!existing) return res.status(404).json({ error: "Expense not found" });
+
+        db.run("DELETE FROM Expenses WHERE id = ?", [id], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) {
+                return res.status(404).json({ error: "Expense not found" });
+            }
+
+            safeNotify({
+                title: "Expense removed",
+                message: `Expense ${existing.description} (${existing.amount.toFixed(2)}) deleted.`,
+                type: "expense",
+            });
+
+            res.json({ message: "Expense deleted" });
+        });
     });
 });
 

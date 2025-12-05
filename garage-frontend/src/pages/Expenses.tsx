@@ -414,7 +414,15 @@ const Expenses = () => {
 
   const formatDate = (value: string) => {
     if (!value) return "—";
-    return new Date(value).toLocaleDateString();
+    const normalized = value.includes("T") ? value : value.replace(" ", "T");
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return value;
+    const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+    }).format(adjusted);
   };
 
   const statusLabel = (status: PaymentStatus) =>

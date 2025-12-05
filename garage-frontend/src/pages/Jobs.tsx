@@ -74,6 +74,7 @@ type JobSummary = {
   vehicle_year: string | null;
   vehicle_license_plate: string | null;
   job_status: JobStatus;
+  category: string | null;
   description: string | null;
   notes: string | null;
   initial_amount: number | null;
@@ -113,6 +114,7 @@ type JobDetail = JobSummary & {
 type CreateJobPayload = {
   customer_id: number;
   description: string;
+  category?: string | null;
   notes?: string | null;
   vehicle_id?: number;
   vehicle?: {
@@ -128,6 +130,15 @@ type CreateJobPayload = {
 };
 
 const JOB_STATUS_OPTIONS: JobStatus[] = ["Pending", "In Progress", "Completed", "Cancelled"];
+
+const JOB_CATEGORY_OPTIONS = [
+  "Maintenance",
+  "Repair",
+  "Diagnostics",
+  "Inspection",
+  "Detailing",
+  "Other",
+] as const;
 
 const STATUS_BADGE_STYLES: Record<JobStatus, string> = {
   Pending: "bg-muted text-muted-foreground",
@@ -159,9 +170,17 @@ const formatVehicle = (job: JobSummary) => {
 
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "—";
-  const parsed = new Date(value);
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const parsed = new Date(normalized);
+  const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString();
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(adjusted);
 };
 
 const Jobs = () => {
@@ -189,6 +208,7 @@ const Jobs = () => {
   const [initialAmount, setInitialAmount] = useState("");
   const [advanceAmount, setAdvanceAmount] = useState("");
   const [jobStatus, setJobStatus] = useState<JobStatus>("Pending");
+  const [jobCategory, setJobCategory] = useState<string>(JOB_CATEGORY_OPTIONS[0]);
   const [assignedTechnicians, setAssignedTechnicians] = useState<number[]>([]);
 
   const [searchTerm, setSearchTerm] = useState("");
@@ -262,6 +282,7 @@ const Jobs = () => {
     setInitialAmount("");
     setAdvanceAmount("");
     setJobStatus("Pending");
+    setJobCategory(JOB_CATEGORY_OPTIONS[0]);
     setAssignedTechnicians([]);
   };
 
@@ -397,6 +418,9 @@ const Jobs = () => {
       advance_amount: parsedAdvance ?? null,
     };
 
+    const resolvedCategory = jobCategory.trim();
+    payload.category = resolvedCategory ? resolvedCategory : null;
+
     if (selectedVehicle) {
       payload.vehicle_id = selectedVehicle.id;
     } else {
@@ -435,6 +459,7 @@ const Jobs = () => {
       const haystack = [
         String(job.id),
         job.customer_name ?? "",
+        job.category ?? "",
         job.description ?? "",
         job.notes ?? "",
         vehicleLabel,
@@ -458,6 +483,8 @@ const Jobs = () => {
       payload: {
         job_status: JobStatus;
         notes: string | null;
+        description: string;
+        category: string | null;
         initial_amount: number | null;
         advance_amount: number | null;
         create_invoice?: boolean;
@@ -518,7 +545,18 @@ const Jobs = () => {
   const createInvoiceMutation = useMutation<
     JobDetail & { invoice?: JobInvoiceSummary | null },
     Error,
-    { id: number; payload: { job_status: JobStatus; notes: string | null; initial_amount: number | null; advance_amount: number | null; create_invoice: true } }
+    {
+      id: number;
+      payload: {
+        job_status: JobStatus;
+        notes: string | null;
+        description: string;
+        category: string | null;
+        initial_amount: number | null;
+        advance_amount: number | null;
+        create_invoice: true;
+      };
+    }
   >({
     mutationFn: ({ id, payload }) =>
       apiFetch<JobDetail & { invoice?: JobInvoiceSummary | null }>(`/jobs/${id}`, {
@@ -582,9 +620,20 @@ const Jobs = () => {
     const formData = new FormData(form);
 
     const job_status = (formData.get("job_status") || selectedJob.job_status) as JobStatus;
+    const categoryRaw = String(formData.get("category") ?? "").trim();
     const notesRaw = String(formData.get("notes") || "").trim();
+    const descriptionRaw = String(formData.get("description") || "").trim();
     const initialRaw = String(formData.get("initial_amount") || "").trim();
     const advanceRaw = String(formData.get("advance_amount") || "").trim();
+
+    if (!descriptionRaw) {
+      toast({
+        title: "Description required",
+        description: "Describe the work that needs to be carried out.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     let initial_amount: number | null = null;
     if (initialRaw) {
@@ -619,6 +668,8 @@ const Jobs = () => {
       payload: {
         job_status,
         notes: notesRaw || null,
+        description: descriptionRaw,
+        category: categoryRaw ? categoryRaw : null,
         initial_amount,
         advance_amount,
       },
@@ -650,11 +701,23 @@ const Jobs = () => {
       return;
     }
 
+    const descriptionValue = (baseJob.description ?? "").trim();
+    if (!descriptionValue) {
+      toast({
+        title: "Description required",
+        description: "Add a job description before generating an invoice.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     createInvoiceMutation.mutate({
       id: baseJob.id,
       payload: {
         job_status: baseJob.job_status,
         notes: baseJob.notes ?? null,
+        description: descriptionValue,
+        category: (baseJob.category ?? "").trim() || null,
         initial_amount: baseJob.initial_amount ?? null,
         advance_amount: baseJob.advance_amount ?? null,
         create_invoice: true,
@@ -752,6 +815,22 @@ const Jobs = () => {
                       {JOB_STATUS_OPTIONS.map((status) => (
                         <SelectItem key={status} value={status}>
                           {status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="jobCategory">Job Category</Label>
+                  <Select value={jobCategory} onValueChange={setJobCategory}>
+                    <SelectTrigger id="jobCategory">
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {JOB_CATEGORY_OPTIONS.map((category) => (
+                        <SelectItem key={category} value={category}>
+                          {category}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -935,6 +1014,7 @@ const Jobs = () => {
                   <th className="p-3 font-medium">Customer</th>
                   <th className="p-3 font-medium">Vehicle</th>
                   <th className="p-3 font-medium">Status</th>
+                  <th className="p-3 font-medium">Category</th>
                   <th className="p-3 font-medium">Technicians</th>
                   <th className="p-3 font-medium">Estimate</th>
                   <th className="p-3 font-medium">Notes</th>
@@ -943,21 +1023,21 @@ const Jobs = () => {
               <tbody>
                 {jobsLoading && (
                   <tr>
-                    <td colSpan={7} className="p-4 text-center text-muted-foreground">
+                    <td colSpan={8} className="p-4 text-center text-muted-foreground">
                       Loading jobs...
                     </td>
                   </tr>
                 )}
                 {jobsError && !jobsLoading && (
                   <tr>
-                    <td colSpan={7} className="p-4 text-center text-destructive">
+                    <td colSpan={8} className="p-4 text-center text-destructive">
                       {jobsErrorObject?.message ?? "Unable to load jobs."}
                     </td>
                   </tr>
                 )}
                 {!jobsLoading && !jobsError && filteredJobs.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-muted-foreground">
+                    <td colSpan={8} className="p-6 text-center text-muted-foreground">
                       No jobs found. Create a job to get started.
                     </td>
                   </tr>
@@ -976,6 +1056,7 @@ const Jobs = () => {
                     <td className="p-3">
                         <Badge className={STATUS_BADGE_STYLES[job.job_status]}>{job.job_status}</Badge>
                     </td>
+                      <td className="p-3">{job.category ?? "—"}</td>
                       <td className="p-3 text-muted-foreground">
                         {job.technicians.length > 0
                           ? job.technicians.map((tech) => tech.name).join(", ")
@@ -1029,6 +1110,12 @@ const Jobs = () => {
                       {jobDetail.job_status}
                     </Badge>
                   </div>
+                </div>
+                <div>
+                  <Label className="text-muted-foreground">Category</Label>
+                  <p className="font-semibold">
+                    {jobDetail.category ?? "Not specified"}
+                  </p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Customer</Label>
@@ -1213,6 +1300,22 @@ const Jobs = () => {
                   </select>
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="editJobCategory">Category</Label>
+                  <select
+                    id="editJobCategory"
+                    name="category"
+                    defaultValue={selectedJob.category ?? ""}
+                    className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="">Not specified</option>
+                    {JOB_CATEGORY_OPTIONS.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="editInitialAmount">Estimated amount</Label>
                   <Input
                     id="editInitialAmount"
@@ -1237,6 +1340,17 @@ const Jobs = () => {
                   />
                 </div>
                 </div>
+              <div className="space-y-2">
+                <Label htmlFor="editDescription">Job description</Label>
+                <Textarea
+                  id="editDescription"
+                  name="description"
+                  rows={3}
+                  defaultValue={selectedJob.description ?? ""}
+                  placeholder="Describe the work that needs to be performed."
+                  required
+                />
+              </div>
                 <div className="space-y-2">
                 <Label htmlFor="editNotes">Notes</Label>
                 <Textarea

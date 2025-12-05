@@ -378,6 +378,7 @@ router.post("/", async (req, res) => {
         job_status = "Pending",
         technician_ids = [],
         items = [],
+        category,
     } = req.body;
 
     if (!customer_id || !description) {
@@ -409,6 +410,10 @@ router.post("/", async (req, res) => {
 
         const initialAmount = parseOptionalAmount(initial_amount, "initial_amount");
         const advanceAmount = parseOptionalAmount(advance_amount, "advance_amount");
+        const normalizedCategory =
+            typeof category === "string" && category.trim().length
+                ? category.trim().slice(0, 100)
+                : null;
 
         const jobResult = await runAsync(
             `
@@ -417,17 +422,19 @@ router.post("/", async (req, res) => {
                 vehicle_id,
                 description,
                 notes,
+                category,
                 initial_amount,
                 advance_amount,
                 job_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `,
             [
                 customer_id,
                 resolvedVehicleId,
                 description,
                 notes,
+                normalizedCategory,
                 initialAmount,
                 advanceAmount,
                 job_status,
@@ -585,11 +592,13 @@ router.put("/:id", async (req, res) => {
     const {
         job_status,
         notes,
+        description,
         initial_amount,
         advance_amount,
         technician_ids,
         items,
         create_invoice,
+        category,
     } = req.body;
 
     if (job_status && !VALID_JOB_STATUSES.includes(job_status)) {
@@ -608,6 +617,24 @@ router.put("/:id", async (req, res) => {
             job_status !== undefined ? job_status : existingJob.job_status;
         const statusChanged = nextStatus !== existingJob.job_status;
         const nextNotes = notes !== undefined ? notes : existingJob.notes;
+        const categoryProvided = Object.prototype.hasOwnProperty.call(req.body, "category");
+        const nextCategory = categoryProvided
+            ? typeof category === "string" && category.trim().length
+                ? category.trim().slice(0, 100)
+                : null
+            : existingJob.category;
+        const descriptionProvided = Object.prototype.hasOwnProperty.call(req.body, "description");
+        let nextDescription = existingJob.description;
+        if (descriptionProvided) {
+            const trimmedDescription = typeof description === "string" ? description.trim() : "";
+            if (!trimmedDescription) {
+                await runAsync("ROLLBACK");
+                return res
+                    .status(400)
+                    .json({ error: "Description is required when updating a job." });
+            }
+            nextDescription = trimmedDescription;
+        }
 
         const initialAmountProvided = Object.prototype.hasOwnProperty.call(
             req.body,
@@ -671,6 +698,8 @@ router.put("/:id", async (req, res) => {
             UPDATE Jobs
             SET job_status = ?,
                 notes = ?,
+                description = ?,
+                category = ?,
                 initial_amount = ?,
                 advance_amount = ?,
                 status_changed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE status_changed_at END,
@@ -680,6 +709,8 @@ router.put("/:id", async (req, res) => {
             [
                 nextStatus,
                 nextNotes,
+                nextDescription,
+                nextCategory,
                 nextInitialAmount,
                 nextAdvanceAmount,
                 statusChanged ? 1 : 0,

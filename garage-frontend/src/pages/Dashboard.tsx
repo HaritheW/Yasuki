@@ -387,11 +387,11 @@ const Dashboard = () => {
     };
 
     if (!payload.name) {
-      toast({
+    toast({
         title: "Customer name is required",
         description: "Please provide a name before saving changes.",
         variant: "destructive",
-      });
+    });
       return;
     }
 
@@ -533,16 +533,16 @@ const Dashboard = () => {
                             setCustomerDetailOpen(true);
                           }}
                         >
-                          <td className="p-3 font-medium">{customer.id}</td>
-                          <td className="p-3">{customer.name}</td>
+                        <td className="p-3 font-medium">{customer.id}</td>
+                        <td className="p-3">{customer.name}</td>
                           <td className="p-3 text-muted-foreground">
                             {customer.email || "—"}
                           </td>
                           <td className="p-3 text-muted-foreground">
                             {customer.phone || "—"}
                           </td>
-                        </tr>
-                      ))}
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>

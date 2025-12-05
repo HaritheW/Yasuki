@@ -91,6 +91,14 @@ const adjustInventoryQuantity = async ({ inventoryItemId, delta, unitCost }) => 
     await notifyLowStockIfNeeded(inventoryItemId);
 };
 
+const safeNotify = async (payload) => {
+    try {
+        await createNotification(payload);
+    } catch (error) {
+        console.error("Supplier notification error:", error.message);
+    }
+};
+
 // Create supplier
 router.post("/", (req, res) => {
     const { name, contact_name, phone, email, address, notes } = req.body;
@@ -105,7 +113,7 @@ router.post("/", (req, res) => {
     `;
     db.run(query, [name, contact_name, phone, email, address, notes], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        res.status(201).json({
+        const supplier = {
             id: this.lastID,
             name,
             contact_name,
@@ -113,7 +121,13 @@ router.post("/", (req, res) => {
             email,
             address,
             notes,
+        };
+        safeNotify({
+            title: "Supplier added",
+            message: `Supplier ${supplier.name} has been added.`,
+            type: "supplier",
         });
+        res.status(201).json(supplier);
     });
 });
 
@@ -165,8 +179,12 @@ router.put("/:id", (req, res) => {
     const { id } = req.params;
     const { name, contact_name, phone, email, address, notes } = req.body;
 
-    db.run(
-        `
+    db.get("SELECT * FROM Suppliers WHERE id = ?", [id], (lookupErr, existing) => {
+        if (lookupErr) return res.status(500).json({ error: lookupErr.message });
+        if (!existing) return res.status(404).json({ error: "Supplier not found" });
+
+        db.run(
+            `
         UPDATE Suppliers
         SET name = COALESCE(?, name),
             contact_name = COALESCE(?, contact_name),
@@ -176,30 +194,73 @@ router.put("/:id", (req, res) => {
             notes = COALESCE(?, notes)
         WHERE id = ?
     `,
-        [name, contact_name, phone, email, address, notes, id],
-        function (err) {
-            if (err) return res.status(500).json({ error: err.message });
-            if (this.changes === 0) {
-                return res.status(404).json({ error: "Supplier not found" });
+            [name, contact_name, phone, email, address, notes, id],
+            function (err) {
+                if (err) return res.status(500).json({ error: err.message });
+                if (this.changes === 0) {
+                    return res.status(404).json({ error: "Supplier not found" });
+                }
+                db.get("SELECT * FROM Suppliers WHERE id = ?", [id], (selectErr, row) => {
+                    if (selectErr) return res.status(500).json({ error: selectErr.message });
+
+                    const changes = [];
+                    if (row.name !== existing.name) changes.push(`name → ${row.name}`);
+                    if (row.contact_name !== existing.contact_name)
+                        changes.push(
+                            row.contact_name
+                                ? `contact person → ${row.contact_name}`
+                                : "contact person cleared"
+                        );
+                    if (row.phone !== existing.phone)
+                        changes.push(
+                            row.phone ? `phone → ${row.phone}` : "phone number cleared"
+                        );
+                    if (row.email !== existing.email)
+                        changes.push(
+                            row.email ? `email → ${row.email}` : "email cleared"
+                        );
+                    if (row.address !== existing.address)
+                        changes.push(row.address ? "address updated" : "address cleared");
+                    if (row.notes !== existing.notes)
+                        changes.push(row.notes ? "notes updated" : "notes cleared");
+
+                    if (changes.length > 0) {
+                        safeNotify({
+                            title: "Supplier updated",
+                            message: `Supplier ${row.name}: ${changes.join(", ")}.`,
+                            type: "supplier",
+                        });
+                    }
+
+                    res.json(row);
+                });
             }
-            db.get("SELECT * FROM Suppliers WHERE id = ?", [id], (selectErr, row) => {
-                if (selectErr) return res.status(500).json({ error: selectErr.message });
-                res.json(row);
-            });
-        }
-    );
+        );
+    });
 });
 
 // Delete supplier
 router.delete("/:id", (req, res) => {
     const { id } = req.params;
 
-    db.run("DELETE FROM Suppliers WHERE id = ?", [id], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) {
-            return res.status(404).json({ error: "Supplier not found" });
-        }
-        res.json({ message: "Supplier deleted" });
+    db.get("SELECT * FROM Suppliers WHERE id = ?", [id], (lookupErr, existing) => {
+        if (lookupErr) return res.status(500).json({ error: lookupErr.message });
+        if (!existing) return res.status(404).json({ error: "Supplier not found" });
+
+        db.run("DELETE FROM Suppliers WHERE id = ?", [id], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) {
+                return res.status(404).json({ error: "Supplier not found" });
+            }
+
+            safeNotify({
+                title: "Supplier removed",
+                message: `Supplier ${existing.name} has been removed.`,
+                type: "supplier",
+            });
+
+            res.json({ message: "Supplier deleted" });
+        });
     });
 });
 
@@ -301,6 +362,11 @@ router.post("/:id/purchase", async (req, res) => {
         await runAsync("COMMIT");
 
         const purchase = await fetchPurchaseById(insertResult.lastID);
+        await safeNotify({
+            title: "Purchase recorded",
+            message: `${purchase.item_name} (${purchase.quantity}) logged for ${purchase.supplier_name ?? "supplier #" + purchase.supplier_id}.`,
+            type: "supplier-purchase",
+        });
         res.status(201).json(purchase);
     } catch (error) {
         try {
@@ -364,6 +430,11 @@ router.put("/purchases/:purchaseId", async (req, res) => {
         );
 
         const updated = await fetchPurchaseById(purchaseId);
+        await safeNotify({
+            title: "Purchase updated",
+            message: `Purchase #${purchaseId} for ${updated.supplier_name ?? "supplier #" + updated.supplier_id} has been updated.`,
+            type: "supplier-purchase",
+        });
         res.json(updated);
     } catch (error) {
         const status = Number.isInteger(error.status) ? error.status : 500;
@@ -391,6 +462,11 @@ router.delete("/purchases/:purchaseId", async (req, res) => {
         }
 
         await runAsync("DELETE FROM SupplierPurchases WHERE id = ?", [purchaseId]);
+        await safeNotify({
+            title: "Purchase deleted",
+            message: `Purchase #${purchaseId} (${existing.item_name}) removed.`,
+            type: "supplier-purchase",
+        });
         res.status(204).send();
     } catch (error) {
         res.status(500).json({ error: error.message });

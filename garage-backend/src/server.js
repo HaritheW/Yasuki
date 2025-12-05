@@ -9,9 +9,11 @@ const invoiceRoutes = require("./routes/invoiceRoutes");
 const expenseRoutes = require("./routes/expenseRoutes");
 const supplierRoutes = require("./routes/supplierRoutes");
 const reportRoutes = require("./routes/reportRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const { purgeOldNotifications } = require("./utils/notifications");
 
 const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "*";
-const ALLOWED_METHODS = "GET,POST,PUT,DELETE,OPTIONS";
+const ALLOWED_METHODS = "GET,POST,PUT,DELETE,PATCH,OPTIONS";
 const ALLOWED_HEADERS = "Content-Type, Authorization";
 
 app.use((req, res, next) => {
@@ -38,6 +40,28 @@ app.use("/invoices", invoiceRoutes);
 app.use("/expenses", expenseRoutes);
 app.use("/suppliers", supplierRoutes);
 app.use("/reports", reportRoutes);
+app.use("/notifications", notificationRoutes);
+
+const NOTIFICATION_RETENTION_DAYS = 60;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+const scheduleNotificationPurge = () => {
+    const purge = async () => {
+        try {
+            const removed = await purgeOldNotifications(NOTIFICATION_RETENTION_DAYS);
+            if (removed > 0) {
+                console.log(`Purged ${removed} notifications older than ${NOTIFICATION_RETENTION_DAYS} days`);
+            }
+        } catch (error) {
+            console.error("Notification purge failed:", error.message);
+        }
+    };
+
+    purge();
+    setInterval(purge, ONE_DAY_MS);
+};
+
+scheduleNotificationPurge();
 
 // Start server
 const PORT = 5000;
