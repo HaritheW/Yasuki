@@ -67,6 +67,7 @@ db.serialize(() => {
             category TEXT,
             initial_amount REAL,
             advance_amount REAL,
+            mileage REAL,
             job_status TEXT CHECK(job_status IN ('Pending', 'In Progress', 'Completed', 'Cancelled')) DEFAULT 'Pending',
             status_changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             invoice_created INTEGER DEFAULT 0,

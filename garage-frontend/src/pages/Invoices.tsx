@@ -59,6 +59,7 @@ type InvoiceSummary = {
   initial_amount: number | null;
   notes: string | null;
   customer_name: string | null;
+  mileage: number | null;
 };
 
 type InvoiceItem = {
@@ -1064,6 +1065,18 @@ const Invoices = () => {
                     {selectedInvoiceDetail.payment_method ?? "Not specified"}
                   </p>
                 </div>
+                {selectedInvoiceDetail.mileage !== null && selectedInvoiceDetail.mileage !== undefined && (
+                  <div>
+                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">Mileage</Label>
+                    <p className="font-semibold text-sm">
+                      {selectedInvoiceDetail.mileage.toLocaleString(undefined, {
+                        maximumFractionDigits: 2,
+                        minimumFractionDigits: selectedInvoiceDetail.mileage % 1 === 0 ? 0 : 2,
+                      })}{" "}
+                      km
+                    </p>
+                  </div>
+                )}
                 <div className="md:col-span-2">
                   <Label className="text-xs uppercase tracking-wide text-muted-foreground">Notes</Label>
                   <p className="rounded-md border border-muted bg-muted/30 p-3 text-sm">
@@ -1534,6 +1547,18 @@ const Invoices = () => {
                         {previewStatusMeta ? previewStatusMeta.label : "Unpaid"}
                       </span>
                     </div>
+                    {previewDetail.mileage !== null && previewDetail.mileage !== undefined && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Mileage</span>
+                        <span className="font-medium text-foreground">
+                          {previewDetail.mileage.toLocaleString(undefined, {
+                            maximumFractionDigits: 2,
+                            minimumFractionDigits: previewDetail.mileage % 1 === 0 ? 0 : 2,
+                          })}{" "}
+                          km
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

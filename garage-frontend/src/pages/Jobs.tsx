@@ -79,6 +79,7 @@ type JobSummary = {
   notes: string | null;
   initial_amount: number | null;
   advance_amount: number | null;
+  mileage: number | null;
   created_at: string;
   technicians: Array<{
     id: number;
@@ -127,6 +128,7 @@ type CreateJobPayload = {
   job_status?: JobStatus;
   initial_amount?: number | null;
   advance_amount?: number | null;
+  mileage?: number | null;
 };
 
 const JOB_STATUS_OPTIONS: JobStatus[] = ["Pending", "In Progress", "Completed", "Cancelled"];
@@ -207,6 +209,8 @@ const Jobs = () => {
   const [notes, setNotes] = useState("");
   const [initialAmount, setInitialAmount] = useState("");
   const [advanceAmount, setAdvanceAmount] = useState("");
+  const [mileage, setMileage] = useState("");
+  const [mileageUnit, setMileageUnit] = useState<"km" | "m">("km");
   const [jobStatus, setJobStatus] = useState<JobStatus>("Pending");
   const [jobCategory, setJobCategory] = useState<string>(JOB_CATEGORY_OPTIONS[0]);
   const [assignedTechnicians, setAssignedTechnicians] = useState<number[]>([]);
@@ -281,6 +285,8 @@ const Jobs = () => {
     setNotes("");
     setInitialAmount("");
     setAdvanceAmount("");
+    setMileage("");
+    setMileageUnit("km");
     setJobStatus("Pending");
     setJobCategory(JOB_CATEGORY_OPTIONS[0]);
     setAssignedTechnicians([]);
@@ -408,6 +414,22 @@ const Jobs = () => {
       parsedAdvance = amount;
     }
 
+    let parsedMileage: number | null | undefined = null;
+    if (mileage.trim()) {
+      const mileageValue = Number(mileage);
+      if (!Number.isFinite(mileageValue) || mileageValue < 0) {
+        toast({
+          title: "Invalid mileage",
+          description: "Mileage must be a positive number.",
+          variant: "destructive",
+        });
+        return;
+      }
+      // Convert to kilometers (database stores in km)
+      // If input is in meters, divide by 1000; if in km, use as is
+      parsedMileage = mileageUnit === "m" ? mileageValue / 1000 : mileageValue;
+    }
+
     const payload: CreateJobPayload = {
       customer_id: selectedCustomer.id,
       description: trimmedDescription,
@@ -416,6 +438,7 @@ const Jobs = () => {
       technician_ids: assignedTechnicians,
       initial_amount: parsedInitial ?? null,
       advance_amount: parsedAdvance ?? null,
+      mileage: parsedMileage ?? null,
     };
 
     const resolvedCategory = jobCategory.trim();
@@ -487,6 +510,7 @@ const Jobs = () => {
         category: string | null;
         initial_amount: number | null;
         advance_amount: number | null;
+        mileage?: number | null;
         create_invoice?: boolean;
       };
     }
@@ -625,6 +649,8 @@ const Jobs = () => {
     const descriptionRaw = String(formData.get("description") || "").trim();
     const initialRaw = String(formData.get("initial_amount") || "").trim();
     const advanceRaw = String(formData.get("advance_amount") || "").trim();
+    const mileageRaw = String(formData.get("mileage") || "").trim();
+    const mileageUnitRaw = String(formData.get("mileage_unit") || "km");
 
     if (!descriptionRaw) {
       toast({
@@ -663,6 +689,21 @@ const Jobs = () => {
       advance_amount = parsed;
     }
 
+    let mileage: number | null = null;
+    if (mileageRaw) {
+      const mileageValue = Number(mileageRaw);
+      if (!Number.isFinite(mileageValue) || mileageValue < 0) {
+        toast({
+          title: "Invalid mileage",
+          description: "Mileage must be a positive number.",
+          variant: "destructive",
+        });
+        return;
+      }
+      // Convert to kilometers (database stores in km)
+      mileage = mileageUnitRaw === "m" ? mileageValue / 1000 : mileageValue;
+    }
+
     updateJobMutation.mutate({
       id: selectedJob.id,
       payload: {
@@ -672,6 +713,7 @@ const Jobs = () => {
         category: categoryRaw ? categoryRaw : null,
         initial_amount,
         advance_amount,
+        mileage,
       },
     });
   };
@@ -861,6 +903,31 @@ const Jobs = () => {
                     value={advanceAmount}
                     onChange={(event) => setAdvanceAmount(event.target.value)}
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="mileage">Mileage</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="mileage"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 50000000"}
+                      value={mileage}
+                      onChange={(event) => setMileage(event.target.value)}
+                      className="flex-1"
+                    />
+                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "m")}>
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="km">Kilometers</SelectItem>
+                        <SelectItem value="m">Meters</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 </div>
 
@@ -1139,6 +1206,18 @@ const Jobs = () => {
                   <Label className="text-muted-foreground">Advance paid</Label>
                   <p className="font-semibold">{formatCurrency(jobDetail.advance_amount)}</p>
                 </div>
+                {jobDetail.mileage !== null && jobDetail.mileage !== undefined && (
+                  <div>
+                    <Label className="text-muted-foreground">Mileage</Label>
+                    <p className="font-semibold">
+                      {jobDetail.mileage.toLocaleString(undefined, {
+                        maximumFractionDigits: 2,
+                        minimumFractionDigits: jobDetail.mileage % 1 === 0 ? 0 : 2,
+                      })}{" "}
+                      km
+                    </p>
+                  </div>
+                )}
                 <div className="md:col-span-2">
                   <Label className="text-muted-foreground">Technicians</Label>
                   <p className="font-semibold">
@@ -1338,6 +1417,38 @@ const Jobs = () => {
                     defaultValue={selectedJob.advance_amount ?? undefined}
                     placeholder="0.00"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="editMileage">Mileage</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="editMileage"
+                      name="mileage"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      defaultValue={
+                        selectedJob.mileage !== null && selectedJob.mileage !== undefined
+                          ? selectedJob.mileage
+                          : undefined
+                      }
+                      placeholder="e.g. 50000"
+                      className="flex-1"
+                    />
+                    <Select
+                      name="mileage_unit"
+                      defaultValue="km"
+                    >
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="km">Kilometers</SelectItem>
+                        <SelectItem value="m">Meters</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 </div>
               <div className="space-y-2">
