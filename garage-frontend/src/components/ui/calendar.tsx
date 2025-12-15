@@ -44,6 +44,9 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }: C
       components={{
         IconLeft: ({ ..._props }) => <ChevronLeft className="h-4 w-4" />,
         IconRight: ({ ..._props }) => <ChevronRight className="h-4 w-4" />,
+        CaptionLabel: ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+          <div className={cn("text-sm font-medium", className)} {...props} />
+        ),
       }}
       {...props}
     />

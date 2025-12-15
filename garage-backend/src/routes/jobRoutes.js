@@ -375,6 +375,7 @@ router.post("/", async (req, res) => {
         notes,
         initial_amount,
         advance_amount,
+        mileage,
         job_status = "Pending",
         technician_ids = [],
         items = [],
@@ -410,6 +411,7 @@ router.post("/", async (req, res) => {
 
         const initialAmount = parseOptionalAmount(initial_amount, "initial_amount");
         const advanceAmount = parseOptionalAmount(advance_amount, "advance_amount");
+        const mileageValue = parseOptionalAmount(mileage, "mileage");
         const normalizedCategory =
             typeof category === "string" && category.trim().length
                 ? category.trim().slice(0, 100)
@@ -425,9 +427,10 @@ router.post("/", async (req, res) => {
                 category,
                 initial_amount,
                 advance_amount,
+                mileage,
                 job_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
             [
                 customer_id,
@@ -437,6 +440,7 @@ router.post("/", async (req, res) => {
                 normalizedCategory,
                 initialAmount,
                 advanceAmount,
+                mileageValue,
                 job_status,
             ]
         );
@@ -595,6 +599,7 @@ router.put("/:id", async (req, res) => {
         description,
         initial_amount,
         advance_amount,
+        mileage,
         technician_ids,
         items,
         create_invoice,
@@ -652,6 +657,11 @@ router.put("/:id", async (req, res) => {
             ? parseOptionalAmount(advance_amount, "advance_amount")
             : existingJob.advance_amount;
 
+        const mileageProvided = Object.prototype.hasOwnProperty.call(req.body, "mileage");
+        const nextMileage = mileageProvided
+            ? parseOptionalAmount(mileage, "mileage")
+            : existingJob.mileage;
+
         if (technician_ids !== undefined) {
             const technicianIds = normalizeIdArray(technician_ids);
             await runAsync("DELETE FROM JobTechnicians WHERE job_id = ?", [id]);
@@ -702,6 +712,7 @@ router.put("/:id", async (req, res) => {
                 category = ?,
                 initial_amount = ?,
                 advance_amount = ?,
+                mileage = ?,
                 status_changed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE status_changed_at END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
@@ -713,6 +724,7 @@ router.put("/:id", async (req, res) => {
                 nextCategory,
                 nextInitialAmount,
                 nextAdvanceAmount,
+                nextMileage,
                 statusChanged ? 1 : 0,
                 id,
             ]

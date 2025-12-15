@@ -1015,4 +1015,3 @@ router.get("/inventory/pdf", async (req, res) => {
 });
 
 module.exports = router;
-
