@@ -303,25 +303,54 @@ const Reports = () => {
         setIsDownloading(false);
         return;
       }
-      const response = await fetch(`${API_BASE_URL}/reports/${endpoint}/pdf?${params.toString()}`);
+      const url = `${API_BASE_URL}/reports/${endpoint}/pdf?${params.toString()}`;
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Accept": "application/pdf",
+        },
+      });
+      
       if (!response.ok) {
-        throw new Error(`Download failed (${response.status})`);
+        const errorText = await response.text();
+        let errorMessage = `Download failed (${response.status})`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.error || errorMessage;
+        } catch {
+          // If not JSON, use the text or default message
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
       }
+      
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
+      if (blob.size === 0) {
+        throw new Error("Received empty PDF file");
+      }
+      
+      const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.href = url;
+      link.href = blobUrl;
       link.download = `${endpoint}-report.pdf`;
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(blobUrl);
       toast({ title: "Download started", description: "Report PDF is being saved." });
     } catch (error) {
+      let errorMessage = "Unknown error";
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        // Check for network errors
+        if (error.message.includes("fetch") || error.message.includes("NetworkError") || error.message.includes("Failed to fetch")) {
+          errorMessage = "Cannot connect to server. Please check if the backend is running on port 5000.";
+        }
+      }
       toast({
         variant: "destructive",
         title: "Could not download",
-        description: error instanceof Error ? error.message : "Unknown error",
+        description: errorMessage,
       });
     } finally {
       setIsDownloading(false);
@@ -997,34 +1026,100 @@ const Reports = () => {
               <CardTitle>Key Metrics Summary</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid gap-4 md:grid-cols-4">
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <div className="grid gap-6 md:grid-cols-2">
+                <div className="flex flex-col space-y-2 p-4 rounded-lg border bg-muted/50">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <TrendingUp className="h-4 w-4" />
-                    Total Revenue
-                  </p>
+                    <span>Total Revenue</span>
+                  </div>
                   <p className="text-2xl font-bold">LKR 328,000</p>
                 </div>
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
-                    <Calendar className="h-4 w-4" />
-                    Jobs Completed
-                  </p>
-                  <p className="text-2xl font-bold">847</p>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <div className="flex flex-col space-y-2 p-4 rounded-lg border bg-muted/50">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <TrendingUp className="h-4 w-4" />
-                    Avg. Job Value
-                  </p>
+                    <span>Avg. Job Value</span>
+                  </div>
                   <p className="text-2xl font-bold">LKR 387</p>
                 </div>
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
-                    <Calendar className="h-4 w-4" />
-                    Customer Retention
-                  </p>
+                <div className="flex flex-col space-y-2 p-4 rounded-lg border bg-muted/50">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <CalendarIcon className="h-4 w-4" />
+                    <span>Jobs Completed</span>
+                  </div>
+                  <p className="text-2xl font-bold">847</p>
+                  <div className="mt-2 pt-2 border-t">
+                    <Calendar
+                      mode="single"
+                      selected={today}
+                      className="pointer-events-none"
+                      classNames={{
+                        months: "flex flex-col space-y-4",
+                        month: "space-y-2",
+                        caption: "flex justify-center pt-1 relative items-center",
+                        caption_label: "text-sm font-medium",
+                        nav: "space-x-1 flex items-center",
+                        nav_button: "h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+                        table: "w-full border-collapse space-y-1",
+                        head_row: "flex",
+                        head_cell: "text-muted-foreground rounded-md w-9 font-normal text-[0.8rem]",
+                        row: "flex w-full mt-2",
+                        cell: "h-7 w-7 text-center text-sm p-0 relative",
+                        day: "h-7 w-7 p-0 font-normal aria-selected:opacity-100",
+                        day_selected: "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
+                        day_today: "bg-accent text-accent-foreground",
+                        day_outside: "day-outside text-muted-foreground opacity-50",
+                        day_disabled: "text-muted-foreground opacity-50",
+                        day_hidden: "invisible",
+                      }}
+                      components={{
+                        IconLeft: () => null,
+                        IconRight: () => null,
+                        CaptionLabel: ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+                          <div className={cn("text-sm font-medium", className)} {...props} />
+                        ),
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col space-y-2 p-4 rounded-lg border bg-muted/50">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <CalendarIcon className="h-4 w-4" />
+                    <span>Customer Retention</span>
+                  </div>
                   <p className="text-2xl font-bold">89%</p>
+                  <div className="mt-2 pt-2 border-t">
+                    <Calendar
+                      mode="single"
+                      selected={today}
+                      className="pointer-events-none"
+                      classNames={{
+                        months: "flex flex-col space-y-4",
+                        month: "space-y-2",
+                        caption: "flex justify-center pt-1 relative items-center",
+                        caption_label: "text-sm font-medium",
+                        nav: "space-x-1 flex items-center",
+                        nav_button: "h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+                        table: "w-full border-collapse space-y-1",
+                        head_row: "flex",
+                        head_cell: "text-muted-foreground rounded-md w-9 font-normal text-[0.8rem]",
+                        row: "flex w-full mt-2",
+                        cell: "h-7 w-7 text-center text-sm p-0 relative",
+                        day: "h-7 w-7 p-0 font-normal aria-selected:opacity-100",
+                        day_selected: "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
+                        day_today: "bg-accent text-accent-foreground",
+                        day_outside: "day-outside text-muted-foreground opacity-50",
+                        day_disabled: "text-muted-foreground opacity-50",
+                        day_hidden: "invisible",
+                      }}
+                      components={{
+                        IconLeft: () => null,
+                        IconRight: () => null,
+                        CaptionLabel: ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+                          <div className={cn("text-sm font-medium", className)} {...props} />
+                        ),
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             </CardContent>
