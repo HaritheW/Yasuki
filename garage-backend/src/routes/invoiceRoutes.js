@@ -401,7 +401,7 @@ const loadInvoiceDetails = async (invoiceId) => {
     const invoice = await getAsync(
         `
         SELECT Invoices.*, Jobs.description AS job_description, Jobs.job_status,
-               Jobs.initial_amount, Jobs.advance_amount,
+               Jobs.initial_amount, Jobs.advance_amount, Jobs.mileage,
                Customers.id AS customer_id, Customers.name AS customer_name, Customers.email AS customer_email,
                Customers.phone AS customer_phone, Customers.address AS customer_address
         FROM Invoices
@@ -858,6 +858,18 @@ const generateInvoicePdfBuffer = (invoice) =>
                         ? [
                               {
                                   text: `Advance received: ${formatCurrency(invoice.advance_amount)}`,
+                                  size: 10,
+                                  color: TEXT_MUTED,
+                              },
+                          ]
+                        : []),
+                    ...(invoice.mileage !== undefined && invoice.mileage !== null
+                        ? [
+                              {
+                                  text: `Mileage: ${Number(invoice.mileage).toLocaleString(undefined, {
+                                      maximumFractionDigits: 2,
+                                      minimumFractionDigits: invoice.mileage % 1 === 0 ? 0 : 2,
+                                  })} km`,
                                   size: 10,
                                   color: TEXT_MUTED,
                               },
