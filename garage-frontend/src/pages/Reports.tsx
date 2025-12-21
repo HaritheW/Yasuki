@@ -68,6 +68,27 @@ type InventoryReport = {
   }[];
 };
 
+type RevenueReport = {
+  range: { startDate: string; endDate: string; label?: string };
+  totals: { invoicesTotal: number; expensesTotal: number; revenue: number };
+  invoices: {
+    id: number;
+    invoice_no: string;
+    invoice_date: string;
+    final_total: number;
+    payment_status: string;
+    customer_name: string | null;
+  }[];
+  expenses: {
+    id: number;
+    description: string;
+    category: string | null;
+    amount: number;
+    expense_date: string;
+    payment_status: string | null;
+  }[];
+};
+
 const revenueData = [
   { month: "Jan", revenue: 45000 },
   { month: "Feb", revenue: 52000 },
@@ -247,6 +268,7 @@ const Reports = () => {
   const expenseQueryEnabled = reportType === "expense" && hasRange;
   const jobQueryEnabled = reportType === "job" && hasRange;
   const inventoryQueryEnabled = reportType === "inventory" && hasRange;
+  const revenueQueryEnabled = reportType === "revenue" && hasRange;
 
   const { data: expenseReport, isFetching: isLoadingExpense } = useQuery({
     queryKey: ["expense-report", timeframe, activeStartDate, activeEndDate],
@@ -270,6 +292,12 @@ const Reports = () => {
     queryFn: () => apiFetch<InventoryReport>(`/reports/inventory?${buildParams().toString()}`),
   });
 
+  const { data: revenueReport, isFetching: isLoadingRevenue } = useQuery({
+    queryKey: ["revenue-report", timeframe, activeStartDate, activeEndDate],
+    enabled: revenueQueryEnabled,
+    queryFn: () => apiFetch<RevenueReport>(`/reports/revenue?${buildParams().toString()}`),
+  });
+
   const [isDownloading, setIsDownloading] = useState(false);
 
   const handleDownload = async (type: ReportType) => {
@@ -288,6 +316,13 @@ const Reports = () => {
       });
       return;
     }
+    if (type === "revenue" && !revenueQueryEnabled) {
+      toast({
+        title: "Pick a date range",
+        description: "Select a period to generate the revenue report PDF.",
+      });
+      return;
+    }
     try {
       setIsDownloading(true);
       const endpoint =
@@ -297,7 +332,9 @@ const Reports = () => {
             ? "jobs"
             : type === "inventory"
               ? "inventory"
-              : null;
+              : type === "revenue"
+                ? "revenue"
+                : null;
       if (!endpoint) {
         toast({ title: "Not available yet", description: "PDF export is not ready for this report." });
         setIsDownloading(false);
@@ -641,10 +678,10 @@ const Reports = () => {
               size="sm"
               className="w-full justify-start"
               onClick={handleGenerateClick}
-              disabled={reportType === "expense" ? isDownloading : false}
+              disabled={(reportType === "expense" || reportType === "revenue") ? isDownloading : false}
             >
               <FileText className="mr-2 h-4 w-4" />
-              {reportType === "expense" ? (isDownloading ? "Downloading..." : "Generate PDF") : "Generate PDF"}
+              {(reportType === "expense" || reportType === "revenue") ? (isDownloading ? "Downloading..." : "Generate PDF") : "Generate PDF"}
             </Button>
           </CardContent>
         </Card>
@@ -968,6 +1005,176 @@ const Reports = () => {
                     <p className="text-sm text-muted-foreground">No inventory records found.</p>
                   )
                 )}
+            </CardContent>
+          </Card>
+        </>
+      ) : reportType === "revenue" ? (
+        <>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Card>
+              <CardHeader>
+                <CardTitle>Revenue Summary</CardTitle>
+                <CardDescription>
+                  {isLoadingRevenue ? "Loading..." : `Net revenue for selected period`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-3xl font-bold">
+                  {revenueReport ? `LKR ${revenueReport.totals.revenue.toLocaleString()}` : "—"}
+                </p>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Invoices Total:</span>
+                    <span className="font-medium">
+                      {revenueReport ? `LKR ${revenueReport.totals.invoicesTotal.toLocaleString()}` : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Expenses Total:</span>
+                    <span className="font-medium">
+                      {revenueReport ? `LKR ${revenueReport.totals.expensesTotal.toLocaleString()}` : "—"}
+                    </span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>Invoices</CardTitle>
+                <CardDescription>
+                  {isLoadingRevenue ? "Loading..." : `${revenueReport?.invoices.length || 0} invoice${(revenueReport?.invoices.length || 0) === 1 ? "" : "s"}`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-3xl font-bold">
+                  {revenueReport ? revenueReport.invoices.length : "—"}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Total: {revenueReport ? `LKR ${revenueReport.totals.invoicesTotal.toLocaleString()}` : "—"}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>Expenses</CardTitle>
+                <CardDescription>
+                  {isLoadingRevenue ? "Loading..." : `${revenueReport?.expenses.length || 0} expense${(revenueReport?.expenses.length || 0) === 1 ? "" : "s"}`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-3xl font-bold">
+                  {revenueReport ? revenueReport.expenses.length : "—"}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Total: {revenueReport ? `LKR ${revenueReport.totals.expensesTotal.toLocaleString()}` : "—"}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Invoices</CardTitle>
+              <CardDescription>Invoices in the selected period</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isLoadingRevenue ? (
+                <p className="text-sm text-muted-foreground">Loading invoices…</p>
+              ) : revenueReport?.invoices.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-muted-foreground">
+                      <tr>
+                        <th className="py-2 pr-3">Date</th>
+                        <th className="py-2 pr-3">Invoice No</th>
+                        <th className="py-2 pr-3">Customer</th>
+                        <th className="py-2 pr-3 text-right">Amount (LKR)</th>
+                        <th className="py-2 pr-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {revenueReport.invoices.slice(0, 50).map((invoice) => (
+                        <tr key={invoice.id} className="border-t border-border/60">
+                          <td className="py-2 pr-3">
+                            {formatDisplayDate(new Date(invoice.invoice_date))}
+                          </td>
+                          <td className="py-2 pr-3">{invoice.invoice_no}</td>
+                          <td className="py-2 pr-3">{invoice.customer_name || "Walk-in"}</td>
+                          <td className="py-2 pr-3 text-right">
+                            {invoice.final_total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <Badge variant="outline">
+                              {(invoice.payment_status || "unpaid").toUpperCase()}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {revenueReport.invoices.length > 50 && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Showing first 50 entries. Download PDF for the full list.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No invoices found for this period.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Expenses</CardTitle>
+              <CardDescription>Expenses in the selected period</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isLoadingRevenue ? (
+                <p className="text-sm text-muted-foreground">Loading expenses…</p>
+              ) : revenueReport?.expenses.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-muted-foreground">
+                      <tr>
+                        <th className="py-2 pr-3">Date</th>
+                        <th className="py-2 pr-3">Description</th>
+                        <th className="py-2 pr-3">Category</th>
+                        <th className="py-2 pr-3 text-right">Amount (LKR)</th>
+                        <th className="py-2 pr-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {revenueReport.expenses.slice(0, 50).map((expense) => (
+                        <tr key={expense.id} className="border-t border-border/60">
+                          <td className="py-2 pr-3">
+                            {formatDisplayDate(new Date(expense.expense_date))}
+                          </td>
+                          <td className="py-2 pr-3">{expense.description}</td>
+                          <td className="py-2 pr-3">
+                            {expense.category || <span className="text-muted-foreground">Uncategorized</span>}
+                          </td>
+                          <td className="py-2 pr-3 text-right">
+                            {expense.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <Badge variant="outline">
+                              {(expense.payment_status || "pending").toUpperCase()}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {revenueReport.expenses.length > 50 && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Showing first 50 entries. Download PDF for the full list.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No expenses found for this period.</p>
+              )}
             </CardContent>
           </Card>
         </>
