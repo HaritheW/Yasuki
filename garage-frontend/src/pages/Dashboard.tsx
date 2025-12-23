@@ -12,6 +12,7 @@ import {
   Users,
   Edit,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -78,6 +79,28 @@ type DashboardStats = {
   activeJobs: number;
 };
 
+type JobStatus = "Pending" | "In Progress" | "Completed" | "Cancelled";
+
+type RecentJob = {
+  id: number;
+  customer_id: number;
+  customer_name: string | null;
+  vehicle_id: number | null;
+  vehicle_make: string | null;
+  vehicle_model: string | null;
+  vehicle_year: string | null;
+  vehicle_license_plate: string | null;
+  job_status: JobStatus;
+  category: string | null;
+  description: string | null;
+  created_at: string;
+  technicians: Array<{
+    id: number;
+    name: string;
+    status: string;
+  }>;
+};
+
 const generateMonthOptions = (count = 24) => {
   const months: { label: string; month: number; year: number }[] = [];
   const now = new Date();
@@ -115,6 +138,20 @@ const Dashboard = () => {
     queryFn: () =>
       apiFetch<DashboardStats>(`/reports/dashboard?month=${selectedMonth}&year=${selectedYear}`),
   });
+
+  const {
+    data: recentJobsData,
+    isLoading: recentJobsLoading,
+    isError: recentJobsError,
+  } = useQuery<RecentJob[], Error>({
+    queryKey: ["recentJobs"],
+    queryFn: () => apiFetch<RecentJob[]>("/jobs"),
+  });
+
+  const recentJobs = useMemo(() => {
+    if (!recentJobsData) return [];
+    return recentJobsData.slice(0, 4);
+  }, [recentJobsData]);
 
   const {
     data: customersData,
@@ -386,6 +423,57 @@ const Dashboard = () => {
       setSelectedMonth(option.month);
       setSelectedYear(option.year);
     }
+  };
+
+  const getJobStatusIcon = (status: JobStatus) => {
+    switch (status) {
+      case "Completed":
+        return <CheckCircle2 className="h-5 w-5 text-success" />;
+      case "In Progress":
+        return <Clock className="h-5 w-5 text-warning" />;
+      case "Pending":
+        return <Clock className="h-5 w-5 text-muted-foreground" />;
+      case "Cancelled":
+        return <XCircle className="h-5 w-5 text-destructive" />;
+      default:
+        return <Clock className="h-5 w-5 text-muted-foreground" />;
+    }
+  };
+
+  const formatJobTitle = (job: RecentJob) => {
+    const description = job.description || job.category || "Job";
+    const vehicleParts = [
+      job.vehicle_make,
+      job.vehicle_model,
+      job.vehicle_year,
+    ].filter(Boolean);
+    const vehicle = vehicleParts.length > 0 ? vehicleParts.join(" ") : null;
+    return vehicle ? `${description} - ${vehicle}` : description;
+  };
+
+  const formatRelativeTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) {
+      const weeks = Math.floor(diffDays / 7);
+      return `${weeks} week${weeks > 1 ? "s" : ""} ago`;
+    }
+    if (diffDays < 365) {
+      const months = Math.floor(diffDays / 30);
+      return `${months} month${months > 1 ? "s" : ""} ago`;
+    }
+    const years = Math.floor(diffDays / 365);
+    return `${years} year${years > 1 ? "s" : ""} ago`;
   };
 
   const handleAddCustomer = (event: FormEvent<HTMLFormElement>) => {
@@ -1144,34 +1232,25 @@ const Dashboard = () => {
             <CardDescription>Latest job activities</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 text-success" />
-              <div className="flex-1">
-                <p className="text-sm font-medium">Oil Change - Honda Civic</p>
-                <p className="text-xs text-muted-foreground">Completed 2 hours ago</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <Clock className="h-5 w-5 text-warning" />
-              <div className="flex-1">
-                <p className="text-sm font-medium">Brake Repair - Toyota Camry</p>
-                <p className="text-xs text-muted-foreground">In progress</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 text-success" />
-              <div className="flex-1">
-                <p className="text-sm font-medium">Transmission Service - Ford F-150</p>
-                <p className="text-xs text-muted-foreground">Completed yesterday</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <Clock className="h-5 w-5 text-warning" />
-              <div className="flex-1">
-                <p className="text-sm font-medium">Engine Diagnostic - BMW 3 Series</p>
-                <p className="text-xs text-muted-foreground">Pending</p>
-              </div>
-            </div>
+            {recentJobsLoading ? (
+              <div className="text-sm text-muted-foreground text-center py-4">Loading jobs...</div>
+            ) : recentJobsError ? (
+              <div className="text-sm text-destructive text-center py-4">Failed to load jobs</div>
+            ) : recentJobs.length === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-4">No jobs found</div>
+            ) : (
+              recentJobs.map((job) => (
+                <div key={job.id} className="flex items-center gap-3">
+                  {getJobStatusIcon(job.job_status)}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{formatJobTitle(job)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {job.job_status} • {formatRelativeTime(job.created_at)}
+                    </p>
+                  </div>
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
       </div>
