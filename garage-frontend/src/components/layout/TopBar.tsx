@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Bell, RefreshCw, User } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -133,7 +132,6 @@ export function TopBar() {
   return (
     <header className="flex h-16 items-center justify-between border-b border-border bg-card px-6">
       <div className="flex items-center gap-4">
-        <SidebarTrigger />
       </div>
       <div className="flex items-center gap-3">
         <DropdownMenu open={notificationsOpen} onOpenChange={handleNotificationsOpenChange}>
