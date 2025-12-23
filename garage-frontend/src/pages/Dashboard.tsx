@@ -17,6 +17,7 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -68,7 +69,32 @@ type CreateCustomerPayload = {
 
 const CUSTOMERS_QUERY_KEY = ["customers"];
 
+type DashboardStats = {
+  month: number;
+  year: number;
+  totalRevenue: number;
+  totalExpenses: number;
+  netProfit: number;
+  activeJobs: number;
+};
+
+const generateMonthOptions = (count = 24) => {
+  const months: { label: string; month: number; year: number }[] = [];
+  const now = new Date();
+  for (let i = 0; i < count; i += 1) {
+    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const month = date.getMonth() + 1;
+    const year = date.getFullYear();
+    const label = new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(date);
+    months.push({ label, month, year });
+  }
+  return months;
+};
+
 const Dashboard = () => {
+  const now = useMemo(() => new Date(), []);
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [addCustomerOpen, setAddCustomerOpen] = useState(false);
   const [viewCustomersOpen, setViewCustomersOpen] = useState(false);
   const [customerDetailOpen, setCustomerDetailOpen] = useState(false);
@@ -77,6 +103,18 @@ const Dashboard = () => {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  const monthOptions = useMemo(() => generateMonthOptions(24), []);
+
+  const {
+    data: dashboardStats,
+    isLoading: dashboardStatsLoading,
+    isError: dashboardStatsError,
+  } = useQuery<DashboardStats, Error>({
+    queryKey: ["dashboardStats", selectedMonth, selectedYear],
+    queryFn: () =>
+      apiFetch<DashboardStats>(`/reports/dashboard?month=${selectedMonth}&year=${selectedYear}`),
+  });
 
   const {
     data: customersData,
@@ -327,12 +365,28 @@ const Dashboard = () => {
     },
   });
 
-  const totalRevenue = revenueData.reduce((sum, item) => sum + item.revenue, 0);
-  const totalExpenses = revenueData.reduce((sum, item) => sum + item.expenses, 0);
-  const netProfit = totalRevenue - totalExpenses;
-  const profitMargin = ((netProfit / totalRevenue) * 100).toFixed(1);
+  const totalRevenue = dashboardStats?.totalRevenue ?? 0;
+  const totalExpenses = dashboardStats?.totalExpenses ?? 0;
+  const netProfit = dashboardStats?.netProfit ?? 0;
+  const activeJobs = dashboardStats?.activeJobs ?? 0;
+  const profitMargin = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100).toFixed(1) : "0.0";
   const formatDashboardCurrency = (value: number) =>
     new Intl.NumberFormat(undefined, { style: "currency", currency: "LKR" }).format(value);
+
+  const selectedMonthLabel = useMemo(() => {
+    const option = monthOptions.find(
+      (opt) => opt.month === selectedMonth && opt.year === selectedYear
+    );
+    return option?.label || `${selectedMonth}/${selectedYear}`;
+  }, [monthOptions, selectedMonth, selectedYear]);
+
+  const handleMonthChange = (value: string) => {
+    const option = monthOptions.find((opt) => `${opt.month}-${opt.year}` === value);
+    if (option) {
+      setSelectedMonth(option.month);
+      setSelectedYear(option.year);
+    }
+  };
 
   const handleAddCustomer = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -412,7 +466,28 @@ const Dashboard = () => {
           <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
           <p className="text-muted-foreground">Welcome back! Here's your garage overview</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="month-select" className="text-sm text-muted-foreground">
+              Month:
+            </Label>
+            <Select
+              value={`${selectedMonth}-${selectedYear}`}
+              onValueChange={handleMonthChange}
+            >
+              <SelectTrigger id="month-select" className="w-[200px]">
+                <SelectValue placeholder="Select month" />
+              </SelectTrigger>
+              <SelectContent>
+                {monthOptions.map((option) => (
+                  <SelectItem key={`${option.month}-${option.year}`} value={`${option.month}-${option.year}`}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex gap-3">
           <Dialog open={addCustomerOpen} onOpenChange={setAddCustomerOpen}>
             <DialogTrigger asChild>
               <Button className="bg-primary hover:bg-primary/90">
@@ -904,6 +979,7 @@ const Dashboard = () => {
               </div>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
       </div>
 
@@ -915,11 +991,18 @@ const Dashboard = () => {
             <DollarSign className="h-4 w-4 text-success" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatDashboardCurrency(totalRevenue)}</div>
-            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-              <TrendingUp className="h-3 w-3 text-success" />
-              <span className="text-success">+12.5%</span> from last month
-            </p>
+            {dashboardStatsLoading ? (
+              <div className="text-2xl font-bold text-muted-foreground">Loading...</div>
+            ) : dashboardStatsError ? (
+              <div className="text-2xl font-bold text-destructive">Error</div>
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{formatDashboardCurrency(totalRevenue)}</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  For {selectedMonthLabel}
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -929,11 +1012,18 @@ const Dashboard = () => {
             <TrendingDown className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatDashboardCurrency(totalExpenses)}</div>
-            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-              <TrendingUp className="h-3 w-3 text-warning" />
-              <span className="text-warning">+5.2%</span> from last month
-            </p>
+            {dashboardStatsLoading ? (
+              <div className="text-2xl font-bold text-muted-foreground">Loading...</div>
+            ) : dashboardStatsError ? (
+              <div className="text-2xl font-bold text-destructive">Error</div>
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{formatDashboardCurrency(totalExpenses)}</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  For {selectedMonthLabel}
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -943,10 +1033,18 @@ const Dashboard = () => {
             <DollarSign className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatDashboardCurrency(netProfit)}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Margin: <span className="text-success font-semibold">{profitMargin}%</span>
-            </p>
+            {dashboardStatsLoading ? (
+              <div className="text-2xl font-bold text-muted-foreground">Loading...</div>
+            ) : dashboardStatsError ? (
+              <div className="text-2xl font-bold text-destructive">Error</div>
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{formatDashboardCurrency(netProfit)}</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Margin: <span className={netProfit >= 0 ? "text-success" : "text-destructive"}>{profitMargin}%</span>
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -956,10 +1054,18 @@ const Dashboard = () => {
             <Wrench className="h-4 w-4 text-info" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">23</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              <span className="text-success">18 completed</span> this week
-            </p>
+            {dashboardStatsLoading ? (
+              <div className="text-2xl font-bold text-muted-foreground">Loading...</div>
+            ) : dashboardStatsError ? (
+              <div className="text-2xl font-bold text-destructive">Error</div>
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{activeJobs}</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  For {selectedMonthLabel}
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

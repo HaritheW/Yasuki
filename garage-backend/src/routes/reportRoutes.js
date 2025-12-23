@@ -1294,4 +1294,59 @@ router.get("/revenue/pdf", async (req, res) => {
     }
 });
 
+// Dashboard stats endpoint
+router.get("/dashboard", async (req, res) => {
+    const now = new Date();
+    const { month = now.getMonth() + 1, year = now.getFullYear() } = req.query;
+
+    try {
+        // Total Revenue - sum of invoice final_total for the month
+        const revenueRow = await getAsync(
+            `
+            SELECT COALESCE(SUM(final_total), 0) AS revenue
+            FROM Invoices
+            WHERE strftime('%m', invoice_date) = printf('%02d', ?) AND strftime('%Y', invoice_date) = ?
+        `,
+            [month, year]
+        );
+
+        // Total Expenses - sum of expenses for the month
+        const expenseRow = await getAsync(
+            `
+            SELECT COALESCE(SUM(amount), 0) AS expenses
+            FROM Expenses
+            WHERE strftime('%m', expense_date) = printf('%02d', ?) AND strftime('%Y', expense_date) = ?
+        `,
+            [month, year]
+        );
+
+        // Active Jobs - count of jobs with status 'Pending' or 'In Progress' for the month
+        const activeJobsRow = await getAsync(
+            `
+            SELECT COUNT(*) AS count
+            FROM Jobs
+            WHERE job_status IN ('Pending', 'In Progress')
+            AND strftime('%m', created_at) = printf('%02d', ?) AND strftime('%Y', created_at) = ?
+        `,
+            [month, year]
+        );
+
+        const totalRevenue = Number(revenueRow.revenue || 0);
+        const totalExpenses = Number(expenseRow.expenses || 0);
+        const netProfit = totalRevenue - totalExpenses;
+        const activeJobs = Number(activeJobsRow.count || 0);
+
+        res.json({
+            month: Number(month),
+            year: Number(year),
+            totalRevenue,
+            totalExpenses,
+            netProfit,
+            activeJobs,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;
