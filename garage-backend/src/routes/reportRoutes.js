@@ -371,6 +371,69 @@ const fetchInventoryReport = async (range) => {
     };
 };
 
+const fetchRevenueReport = async (range) => {
+    const invoicesTotal = await getAsync(
+        `
+        SELECT COALESCE(SUM(final_total), 0) AS total
+        FROM Invoices
+        WHERE DATE(invoice_date) BETWEEN DATE(?) AND DATE(?)
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    const expensesTotal = await getAsync(
+        `
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM Expenses
+        WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    const invoices = await allAsync(
+        `
+        SELECT
+            Invoices.id,
+            Invoices.invoice_no,
+            Invoices.invoice_date,
+            Invoices.final_total,
+            Invoices.payment_status,
+            Customers.name AS customer_name
+        FROM Invoices
+        LEFT JOIN Jobs ON Jobs.id = Invoices.job_id
+        LEFT JOIN Customers ON Customers.id = Jobs.customer_id
+        WHERE DATE(Invoices.invoice_date) BETWEEN DATE(?) AND DATE(?)
+        ORDER BY Invoices.invoice_date DESC, Invoices.id DESC
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    const expenses = await allAsync(
+        `
+        SELECT id, description, category, amount, expense_date, payment_status
+        FROM Expenses
+        WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
+        ORDER BY expense_date DESC, id DESC
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    const invoicesTotalAmount = Number((invoicesTotal?.total || 0).toFixed(2));
+    const expensesTotalAmount = Number((expensesTotal?.total || 0).toFixed(2));
+    const revenue = Number((invoicesTotalAmount - expensesTotalAmount).toFixed(2));
+
+    return {
+        range,
+        totals: {
+            invoicesTotal: invoicesTotalAmount,
+            expensesTotal: expensesTotalAmount,
+            revenue,
+        },
+        invoices,
+        expenses,
+    };
+};
+
 const renderExpensePdf = (report) =>
     new Promise((resolve, reject) => {
         const doc = new PDFDocument({ margin: 36, size: "A4" });
@@ -2004,6 +2067,278 @@ router.get("/inventory/excel", async (req, res) => {
         res.status(200).send(buffer);
     } catch (error) {
         console.error("Excel generation error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+const renderRevenuePdf = (report) =>
+    new Promise((resolve, reject) => {
+        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const chunks = [];
+        doc.on("data", (chunk) => chunks.push(chunk));
+        doc.on("end", () => resolve(Buffer.concat(chunks)));
+        doc.on("error", reject);
+
+        const formatCurrency = (value) =>
+            `LKR ${Number(value || 0).toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            })}`;
+        const formatDate = (value) => {
+            const parsed = new Date(value);
+            return Number.isNaN(parsed.getTime())
+                ? value
+                : parsed.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
+        };
+
+        const setFont = ({ size = 10, bold = false, color = "#111827" } = {}) => {
+            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(size).fillColor(color);
+        };
+
+        // Header band
+        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        doc.save();
+        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 58).fill("#0f172a");
+        doc.restore();
+        doc.moveDown(0.2);
+        setFont({ size: 22, bold: true, color: "#ffffff" });
+        doc.text("Revenue Report", doc.page.margins.left + 8, doc.page.margins.top + 12);
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}`, {
+            align: "left",
+            lineGap: 2,
+        });
+        doc.text(
+            `Generated: ${new Date().toLocaleDateString("en-GB", {
+                year: "numeric",
+                month: "short",
+                day: "2-digit",
+            })}`
+        );
+        doc.moveDown(2);
+
+        // Summary band
+        const cardWidth = (pageWidth - 12) / 3;
+        const cardHeight = 74;
+        const startY = doc.y;
+        const drawCard = (x, title, value, caption) => {
+            doc.save();
+            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
+            doc.restore();
+            setFont({ size: 10, color: "#6b7280" });
+            doc.text(title, x + 12, startY + 10);
+            setFont({ size: 16, bold: true });
+            doc.text(value, x + 12, startY + 28);
+            setFont({ size: 9, color: "#6b7280" });
+            doc.text(caption, x + 12, startY + 48);
+        };
+
+        drawCard(
+            doc.page.margins.left,
+            "Net Revenue",
+            formatCurrency(report.totals.revenue),
+            `Invoices - Expenses`
+        );
+
+        drawCard(
+            doc.page.margins.left + cardWidth + 6,
+            "Invoices Total",
+            formatCurrency(report.totals.invoicesTotal),
+            `${report.invoices.length} invoice${report.invoices.length === 1 ? "" : "s"}`
+        );
+
+        drawCard(
+            doc.page.margins.left + (cardWidth + 6) * 2,
+            "Expenses Total",
+            formatCurrency(report.totals.expensesTotal),
+            `${report.expenses.length} expense${report.expenses.length === 1 ? "" : "s"}`
+        );
+
+        doc.moveDown(6);
+
+        const sectionTitle = (label) => {
+            setFont({ size: 12, bold: true });
+            doc.text(label, { continued: false });
+            doc.moveDown(0.4);
+        };
+
+        // Invoices table
+        sectionTitle("Invoices");
+        if (!report.invoices.length) {
+            setFont({ size: 10, color: "#6b7280" });
+            doc.text("No invoices recorded in this period.");
+        } else {
+            const widths = [70, 120, 140, 90, 70];
+            const headers = ["Date", "Invoice No", "Customer", "Amount", "Status"];
+            const startX = doc.page.margins.left;
+            setFont({ size: 9, bold: true, color: "#475569" });
+            headers.forEach((title, idx) => {
+                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
+                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
+            });
+            doc.moveDown(0.3);
+            doc.strokeColor("#e2e8f0")
+                .moveTo(startX, doc.y)
+                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
+                .stroke();
+            doc.moveDown(0.2);
+            setFont({ size: 9, color: "#111827" });
+            const maxInvoiceRows = 60;
+            const invoiceRows = report.invoices.slice(0, maxInvoiceRows);
+            invoiceRows.forEach((entry, index) => {
+                const offsetY = doc.y;
+                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
+                doc.save();
+                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
+                doc.restore();
+                const values = [
+                    formatDate(entry.invoice_date),
+                    entry.invoice_no || "—",
+                    entry.customer_name || "Walk-in",
+                    formatCurrency(entry.final_total),
+                    (entry.payment_status || "unpaid").toUpperCase(),
+                ];
+                values.forEach((val, idx) => {
+                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
+                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
+                });
+                doc.moveDown(0.8);
+            });
+
+            if (report.invoices.length > maxInvoiceRows) {
+                setFont({ size: 9, color: "#6b7280" });
+                doc.text(`+ ${report.invoices.length - maxInvoiceRows} more invoices not shown`, startX, doc.y);
+            }
+        }
+
+        doc.addPage();
+
+        // Expenses table
+        sectionTitle("Expenses");
+        if (!report.expenses.length) {
+            setFont({ size: 10, color: "#6b7280" });
+            doc.text("No expenses recorded in this period.");
+        } else {
+            const widths = [70, 170, 100, 90, 70];
+            const headers = ["Date", "Description", "Category", "Amount", "Status"];
+            const startX = doc.page.margins.left;
+            setFont({ size: 9, bold: true, color: "#475569" });
+            headers.forEach((title, idx) => {
+                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
+                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
+            });
+            doc.moveDown(0.3);
+            doc.strokeColor("#e2e8f0")
+                .moveTo(startX, doc.y)
+                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
+                .stroke();
+            doc.moveDown(0.2);
+            setFont({ size: 9, color: "#111827" });
+            const maxExpenseRows = 60;
+            const expenseRows = report.expenses.slice(0, maxExpenseRows);
+            expenseRows.forEach((entry, index) => {
+                const offsetY = doc.y;
+                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
+                doc.save();
+                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
+                doc.restore();
+                const values = [
+                    formatDate(entry.expense_date),
+                    entry.description || "—",
+                    entry.category || "Uncategorized",
+                    formatCurrency(entry.amount),
+                    (entry.payment_status || "pending").toUpperCase(),
+                ];
+                values.forEach((val, idx) => {
+                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
+                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
+                });
+                doc.moveDown(0.8);
+            });
+
+            if (report.expenses.length > maxExpenseRows) {
+                setFont({ size: 9, color: "#6b7280" });
+                doc.text(`+ ${report.expenses.length - maxExpenseRows} more expenses not shown`, startX, doc.y);
+            }
+        }
+
+        doc.end();
+    });
+
+router.get("/revenue", async (req, res) => {
+    try {
+        const range = deriveDateRange(req.query);
+        const report = await fetchRevenueReport(range);
+        res.json(report);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.get("/revenue/pdf", async (req, res) => {
+    try {
+        const range = deriveDateRange(req.query);
+        const report = await fetchRevenueReport(range);
+        const buffer = await renderRevenuePdf(report);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename=revenue-report-${range.startDate}-to-${range.endDate}.pdf`);
+        res.send(buffer);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Dashboard stats endpoint
+router.get("/dashboard", async (req, res) => {
+    const now = new Date();
+    const { month = now.getMonth() + 1, year = now.getFullYear() } = req.query;
+
+    try {
+        // Total Revenue - sum of invoice final_total for the month
+        const revenueRow = await getAsync(
+            `
+            SELECT COALESCE(SUM(final_total), 0) AS revenue
+            FROM Invoices
+            WHERE strftime('%m', invoice_date) = printf('%02d', ?) AND strftime('%Y', invoice_date) = ?
+        `,
+            [month, year]
+        );
+
+        // Total Expenses - sum of expenses for the month
+        const expenseRow = await getAsync(
+            `
+            SELECT COALESCE(SUM(amount), 0) AS expenses
+            FROM Expenses
+            WHERE strftime('%m', expense_date) = printf('%02d', ?) AND strftime('%Y', expense_date) = ?
+        `,
+            [month, year]
+        );
+
+        // Active Jobs - count of jobs with status 'Pending' or 'In Progress' for the month
+        const activeJobsRow = await getAsync(
+            `
+            SELECT COUNT(*) AS count
+            FROM Jobs
+            WHERE job_status IN ('Pending', 'In Progress')
+            AND strftime('%m', created_at) = printf('%02d', ?) AND strftime('%Y', created_at) = ?
+        `,
+            [month, year]
+        );
+
+        const totalRevenue = Number(revenueRow.revenue || 0);
+        const totalExpenses = Number(expenseRow.expenses || 0);
+        const netProfit = totalRevenue - totalExpenses;
+        const activeJobs = Number(activeJobsRow.count || 0);
+
+        res.json({
+            month: Number(month),
+            year: Number(year),
+            totalRevenue,
+            totalExpenses,
+            netProfit,
+            activeJobs,
+        });
+    } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
