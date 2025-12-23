@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { Download, FileText, TrendingUp, Calendar as CalendarIcon } from "lucide-react";
+import { Download, FileText, TrendingUp, Calendar as CalendarIcon, FileSpreadsheet } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { apiFetch, API_BASE_URL } from "@/lib/api";
@@ -398,6 +398,91 @@ const Reports = () => {
     void handleDownload(reportType);
   };
 
+  const handleDownloadExcel = async (type: ReportType) => {
+    const params = buildParams();
+    if (!hasRange && timeframe !== "daily" && timeframe !== "yearly" && timeframe !== "monthly") {
+      toast({
+        title: "Pick a date range",
+        description: "Select a period to generate the report Excel.",
+      });
+      return;
+    }
+    if (type === "expense" && !expenseQueryEnabled) {
+      toast({
+        title: "Pick a date range",
+        description: "Select a period to generate the expense report Excel.",
+      });
+      return;
+    }
+    try {
+      setIsDownloading(true);
+      const endpoint =
+        type === "expense"
+          ? "expenses"
+          : type === "job"
+            ? "jobs"
+            : type === "inventory"
+              ? "inventory"
+              : type === "revenue"
+                ? "revenue"
+              : null;
+      if (!endpoint) {
+        toast({ title: "Not available yet", description: "Excel export is not ready for this report." });
+        setIsDownloading(false);
+        return;
+      }
+      const url = `${API_BASE_URL}/reports/${endpoint}/excel?${params.toString()}`;
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `Download failed (${response.status})`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.error || errorMessage;
+        } catch {
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      const blob = await response.blob();
+      if (blob.size === 0) {
+        throw new Error("Received empty Excel file");
+      }
+      
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `${endpoint}-report.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+      toast({ title: "Download started", description: "Report Excel is being saved." });
+    } catch (error) {
+      let errorMessage = "Unknown error";
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        if (error.message.includes("fetch") || error.message.includes("NetworkError") || error.message.includes("Failed to fetch")) {
+          errorMessage = "Cannot connect to server. Please check if the backend is running on port 5000.";
+        }
+      }
+      toast({
+        variant: "destructive",
+        title: "Could not download",
+        description: errorMessage,
+      });
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
 
   const handleMonthSelection = (value: string, kind: "start" | "end") => {
     const option = monthOptions.find((opt) => opt.start.toISOString() === value);
@@ -674,15 +759,27 @@ const Reports = () => {
           </CardHeader>
           <CardContent className="space-y-2">
             <Button
-              variant="outline"
-              size="sm"
-              className="w-full justify-start"
-              onClick={handleGenerateClick}
-              disabled={(reportType === "expense" || reportType === "revenue") ? isDownloading : false}
-            >
-              <FileText className="mr-2 h-4 w-4" />
-              {(reportType === "expense" || reportType === "revenue") ? (isDownloading ? "Downloading..." : "Generate PDF") : "Generate PDF"}
-            </Button>
+  variant="outline"
+  size="sm"
+  className="w-full justify-start"
+  onClick={handleGenerateClick}
+  disabled={isDownloading}
+>
+  <FileText className="mr-2 h-4 w-4" />
+  {isDownloading ? "Downloading..." : "Generate PDF"}
+</Button>
+
+<Button
+  variant="outline"
+  size="sm"
+  className="w-full justify-start"
+  onClick={() => void handleDownloadExcel(reportType)}
+  disabled={isDownloading}
+>
+  <FileSpreadsheet className="mr-2 h-4 w-4" />
+  {isDownloading ? "Downloading..." : "Generate Excel"}
+</Button>
+
           </CardContent>
         </Card>
       </div>
@@ -1281,7 +1378,7 @@ const Reports = () => {
                       components={{
                         IconLeft: () => null,
                         IconRight: () => null,
-                        CaptionLabel: ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+                        CaptionLabel: ({ className, displayMonth, displayIndex, ...props }: React.HTMLAttributes<HTMLDivElement> & { displayMonth?: Date; displayIndex?: number }) => (
                           <div className={cn("text-sm font-medium", className)} {...props} />
                         ),
                       }}
@@ -1321,7 +1418,7 @@ const Reports = () => {
                       components={{
                         IconLeft: () => null,
                         IconRight: () => null,
-                        CaptionLabel: ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+                        CaptionLabel: ({ className, displayMonth, displayIndex, ...props }: React.HTMLAttributes<HTMLDivElement> & { displayMonth?: Date; displayIndex?: number }) => (
                           <div className={cn("text-sm font-medium", className)} {...props} />
                         ),
                       }}

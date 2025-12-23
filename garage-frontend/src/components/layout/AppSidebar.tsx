@@ -35,14 +35,12 @@ const menuItems = [
 ];
 
 export function AppSidebar() {
-  const { open } = useSidebar();
-
   return (
-    <Sidebar collapsible="icon" className="border-r border-sidebar-border">
+    <Sidebar collapsible="none" className="border-r border-sidebar-border">
       <SidebarHeader className="border-b border-sidebar-border p-4">
         <div className="flex items-center gap-2">
           <Settings className="h-6 w-6 text-sidebar-primary" />
-          {open && <span className="font-semibold text-sidebar-foreground">Garage ERP</span>}
+          <span className="font-semibold text-sidebar-foreground">Garage ERP</span>
         </div>
       </SidebarHeader>
       <SidebarContent>
@@ -60,7 +58,7 @@ export function AppSidebar() {
                       activeClassName="bg-sidebar-accent text-sidebar-accent-foreground font-medium"
                     >
                       <item.icon className="h-4 w-4" />
-                      {open && <span>{item.title}</span>}
+                      <span>{item.title}</span>
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
