@@ -319,7 +319,7 @@ const Reports = () => {
     if (type === "revenue" && !revenueQueryEnabled) {
       toast({
         title: "Pick a date range",
-        description: "Select a period to generate the revenue report PDF.",
+        description: "Select a period to generate the profit report PDF.",
       });
       return;
     }
@@ -533,7 +533,7 @@ const Reports = () => {
                 <SelectValue placeholder="Select report" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="revenue">Revenue Report</SelectItem>
+                <SelectItem value="revenue">Profit Report</SelectItem>
                 <SelectItem value="expense">Expense Report</SelectItem>
                 <SelectItem value="job">Job Summary</SelectItem>
                 <SelectItem value="inventory">Inventory Report</SelectItem>
