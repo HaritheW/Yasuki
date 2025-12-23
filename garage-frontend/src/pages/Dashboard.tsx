@@ -13,6 +13,7 @@ import {
   Edit,
   Trash2,
   XCircle,
+  BarChart3,
 } from "lucide-react";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -21,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 
@@ -126,6 +128,7 @@ const Dashboard = () => {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const monthOptions = useMemo(() => generateMonthOptions(24), []);
 
@@ -1207,21 +1210,37 @@ const Dashboard = () => {
             <CardDescription>Frequently used operations</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
-            <Button variant="outline" className="w-full justify-start">
+            <Button 
+              variant="outline" 
+              className="w-full justify-start"
+              onClick={() => navigate("/jobs")}
+            >
               <Plus className="mr-2 h-4 w-4" />
               Create New Job
             </Button>
-            <Button variant="outline" className="w-full justify-start">
+            <Button 
+              variant="outline" 
+              className="w-full justify-start"
+              onClick={() => navigate("/inventory")}
+            >
               <Plus className="mr-2 h-4 w-4" />
               Add Inventory Item
             </Button>
-            <Button variant="outline" className="w-full justify-start">
+            <Button 
+              variant="outline" 
+              className="w-full justify-start"
+              onClick={() => navigate("/expenses")}
+            >
               <Plus className="mr-2 h-4 w-4" />
               Record Expense
             </Button>
-            <Button variant="outline" className="w-full justify-start">
-              <Plus className="mr-2 h-4 w-4" />
-              Add New Customer
+            <Button 
+              variant="outline" 
+              className="w-full justify-start"
+              onClick={() => navigate("/reports")}
+            >
+              <BarChart3 className="mr-2 h-4 w-4" />
+              View Reports
             </Button>
           </CardContent>
         </Card>

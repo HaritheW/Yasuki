@@ -261,6 +261,7 @@ const fetchJobReport = async (range) => {
 };
 
 const fetchRevenueReport = async (range) => {
+    // Get invoice summary with payment status breakdown
     const summary = await getAsync(
         `
         SELECT
@@ -275,6 +276,17 @@ const fetchRevenueReport = async (range) => {
         [range.startDate, range.endDate]
     );
 
+    // Get expenses total
+    const expensesTotal = await getAsync(
+        `
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM Expenses
+        WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    // Get payment status breakdown
     const statuses = await allAsync(
         `
         SELECT payment_status AS status, COUNT(*) AS count, COALESCE(SUM(final_total), 0) AS total
@@ -286,6 +298,7 @@ const fetchRevenueReport = async (range) => {
         [range.startDate, range.endDate]
     );
 
+    // Get detailed invoices list
     const invoices = await allAsync(
         `
         SELECT
@@ -305,24 +318,41 @@ const fetchRevenueReport = async (range) => {
         [range.startDate, range.endDate]
     );
 
+    // Get expenses list
+    const expenses = await allAsync(
+        `
+        SELECT id, description, category, amount, expense_date, payment_status
+        FROM Expenses
+        WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
+        ORDER BY expense_date DESC, id DESC
+    `,
+        [range.startDate, range.endDate]
+    );
+
     const totalRevenue = Number(summary?.totalRevenue || 0);
     const invoiceCount = Number(summary?.invoiceCount || 0);
     const paidRevenue = Number(summary?.paidRevenue || 0);
     const partialRevenue = Number(summary?.partialRevenue || 0);
     const unpaidRevenue = Number(summary?.unpaidRevenue || 0);
+    const expensesTotalAmount = Number((expensesTotal?.total || 0).toFixed(2));
+    const netRevenue = Number((totalRevenue - expensesTotalAmount).toFixed(2));
 
     return {
         range,
         totals: {
             totalRevenue: Number(totalRevenue.toFixed(2)),
+            invoicesTotal: Number(totalRevenue.toFixed(2)), // Alias for backward compatibility
             invoiceCount,
             averageInvoice: invoiceCount ? Number((totalRevenue / invoiceCount).toFixed(2)) : 0,
             paidRevenue: Number(paidRevenue.toFixed(2)),
             partialRevenue: Number(partialRevenue.toFixed(2)),
             unpaidRevenue: Number(unpaidRevenue.toFixed(2)),
+            expensesTotal: expensesTotalAmount,
+            revenue: netRevenue,
         },
         statuses,
         invoices,
+        expenses,
     };
 };
 
@@ -371,68 +401,6 @@ const fetchInventoryReport = async (range) => {
     };
 };
 
-const fetchRevenueReport = async (range) => {
-    const invoicesTotal = await getAsync(
-        `
-        SELECT COALESCE(SUM(final_total), 0) AS total
-        FROM Invoices
-        WHERE DATE(invoice_date) BETWEEN DATE(?) AND DATE(?)
-    `,
-        [range.startDate, range.endDate]
-    );
-
-    const expensesTotal = await getAsync(
-        `
-        SELECT COALESCE(SUM(amount), 0) AS total
-        FROM Expenses
-        WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
-    `,
-        [range.startDate, range.endDate]
-    );
-
-    const invoices = await allAsync(
-        `
-        SELECT
-            Invoices.id,
-            Invoices.invoice_no,
-            Invoices.invoice_date,
-            Invoices.final_total,
-            Invoices.payment_status,
-            Customers.name AS customer_name
-        FROM Invoices
-        LEFT JOIN Jobs ON Jobs.id = Invoices.job_id
-        LEFT JOIN Customers ON Customers.id = Jobs.customer_id
-        WHERE DATE(Invoices.invoice_date) BETWEEN DATE(?) AND DATE(?)
-        ORDER BY Invoices.invoice_date DESC, Invoices.id DESC
-    `,
-        [range.startDate, range.endDate]
-    );
-
-    const expenses = await allAsync(
-        `
-        SELECT id, description, category, amount, expense_date, payment_status
-        FROM Expenses
-        WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
-        ORDER BY expense_date DESC, id DESC
-    `,
-        [range.startDate, range.endDate]
-    );
-
-    const invoicesTotalAmount = Number((invoicesTotal?.total || 0).toFixed(2));
-    const expensesTotalAmount = Number((expensesTotal?.total || 0).toFixed(2));
-    const revenue = Number((invoicesTotalAmount - expensesTotalAmount).toFixed(2));
-
-    return {
-        range,
-        totals: {
-            invoicesTotal: invoicesTotalAmount,
-            expensesTotal: expensesTotalAmount,
-            revenue,
-        },
-        invoices,
-        expenses,
-    };
-};
 
 const renderExpensePdf = (report) =>
     new Promise((resolve, reject) => {
@@ -972,177 +940,6 @@ const renderInventoryPdf = (report) =>
         pdf.finish();
     });
 
-const renderRevenuePdf = (report) =>
-    new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
-        const chunks = [];
-        doc.on("data", (chunk) => chunks.push(chunk));
-        doc.on("end", () => resolve(Buffer.concat(chunks)));
-        doc.on("error", reject);
-        
-        try {
-            const pdf = attachPdfScaffold(doc, { title: "Revenue Report", range: report.range });
-            const setFont = pdf.setFont;
-            const formatDate = pdfFormatDate;
-            const formatCurrency = pdfFormatCurrency;
-
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        doc.moveDown(0.4);
-
-        // Summary cards
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
-            doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
-            doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 50, { width: cardWidth - 24 });
-        };
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Revenue",
-            formatCurrency(report.totals.totalRevenue),
-            `${report.totals.invoiceCount} invoice(s)`
-        );
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Paid Revenue",
-            formatCurrency(report.totals.paidRevenue),
-            "Status: paid"
-        );
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Avg / Invoice",
-            formatCurrency(report.totals.averageInvoice),
-            "Average billed amount"
-        );
-
-        doc.y = startY + cardHeight + 18;
-
-        // Status breakdown
-        setFont({ size: 12, bold: true });
-        doc.text("Payment Status Breakdown", doc.page.margins.left, doc.y);
-        doc.moveDown(0.6);
-
-        if (!report.statuses?.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No invoices found for the selected period.");
-            pdf.finish();
-            return;
-        }
-
-        const statusStartX = doc.page.margins.left;
-        const statusColWidths = [120, 90, 140];
-        setFont({ size: 9, bold: true, color: "#475569" });
-        ["Status", "Count", "Total"].forEach((title, idx) => {
-            doc.text(title, statusStartX + statusColWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: statusColWidths[idx],
-            });
-        });
-        doc.moveDown(0.3);
-        doc.strokeColor("#e2e8f0")
-            .moveTo(statusStartX, doc.y)
-            .lineTo(statusStartX + statusColWidths.reduce((a, b) => a + b, 0), doc.y)
-            .stroke();
-        doc.moveDown(0.2);
-
-        setFont({ size: 9, color: "#0f172a" });
-        report.statuses.forEach((row, idx) => {
-            const rowStartY = doc.y;
-            if (idx % 2 === 0) {
-                doc.save();
-                doc.rect(statusStartX, rowStartY - 2, statusColWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                doc.restore();
-            }
-            const values = [(row.status || "unknown").toUpperCase(), `${row.count ?? 0}`, formatCurrency(row.total ?? 0)];
-            values.forEach((val, colIdx) => {
-                doc.text(val, statusStartX + statusColWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                    width: statusColWidths[colIdx] - 8,
-                });
-            });
-            doc.moveDown(0.8);
-        });
-
-        doc.moveDown(1.2);
-
-        // Invoice list
-        setFont({ size: 12, bold: true });
-        doc.text("Invoices", doc.page.margins.left, doc.y);
-        doc.moveDown(0.6);
-
-        const tableStartX = doc.page.margins.left;
-        const colWidths = [80, 90, 170, 70, 90]; // date, invoice, customer, status, total
-
-        const drawInvoiceHeader = () => {
-            setFont({ size: 9, bold: true, color: "#475569" });
-            ["Date", "Invoice", "Customer", "Status", "Total"].forEach((title, idx) => {
-                doc.text(title, tableStartX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                    width: colWidths[idx],
-                });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(tableStartX, doc.y)
-                .lineTo(tableStartX + colWidths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-        };
-
-        drawInvoiceHeader();
-        setFont({ size: 9, color: "#0f172a" });
-
-        const maxRows = 120;
-        const rows = (report.invoices ?? []).slice(0, maxRows);
-        rows.forEach((inv, idx) => {
-            const bottomLimit = doc.page.height - doc.page.margins.bottom - 40;
-            if (doc.y > bottomLimit) {
-                pdf.addPage();
-                doc.moveDown(0.2);
-                drawInvoiceHeader();
-                setFont({ size: 9, color: "#0f172a" });
-            }
-
-            const rowStartY = doc.y;
-            if (idx % 2 === 0) {
-                doc.save();
-                doc.rect(tableStartX, rowStartY - 2, colWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                doc.restore();
-            }
-
-            const values = [
-                formatDate(inv.invoice_date),
-                pdfTruncate(inv.invoice_no || "—", 14),
-                pdfTruncate(inv.customer_name || "—", 26),
-                (inv.payment_status || "unpaid").toUpperCase(),
-                formatCurrency(inv.final_total || 0),
-            ];
-
-            values.forEach((val, colIdx) => {
-                doc.text(val, tableStartX + colWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                    width: colWidths[colIdx] - 8,
-                });
-            });
-            doc.moveDown(0.8);
-        });
-
-        if ((report.invoices ?? []).length > rows.length) {
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(`+ ${(report.invoices ?? []).length - rows.length} more invoices not shown`, tableStartX, doc.y);
-        }
-
-        pdf.finish();
-        } catch (error) {
-            console.error("Error in renderRevenuePdf:", error);
-            reject(error);
-        }
-    });
 
 // Excel Generation Functions with Professional Formatting
 const renderExpenseExcel = async (report) => {
