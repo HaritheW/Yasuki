@@ -2122,6 +2122,69 @@ router.get("/dashboard", async (req, res) => {
             [month, year]
         );
 
+        // Job Status Breakdown - count of jobs by status for the month
+        const jobStatuses = await allAsync(
+            `
+            SELECT job_status AS status, COUNT(*) AS count
+            FROM Jobs
+            WHERE strftime('%m', created_at) = printf('%02d', ?) AND strftime('%Y', created_at) = ?
+            GROUP BY job_status
+        `,
+            [month, year]
+        );
+
+        // Weekly Revenue and Expenses breakdown for the month
+        // Always divide month into exactly 4 weeks
+        const firstDay = new Date(year, month - 1, 1);
+        const lastDay = new Date(year, month, 0);
+        const totalDays = lastDay.getDate();
+        const daysPerWeek = Math.ceil(totalDays / 4);
+        const weeks = [];
+        
+        for (let weekNum = 0; weekNum < 4; weekNum++) {
+            const weekStart = new Date(firstDay);
+            weekStart.setDate(weekStart.getDate() + (weekNum * daysPerWeek));
+            
+            const weekEnd = new Date(weekStart);
+            weekEnd.setDate(weekEnd.getDate() + daysPerWeek - 1);
+            
+            // Ensure week end doesn't exceed last day of month
+            if (weekEnd > lastDay) {
+                weekEnd.setTime(lastDay.getTime());
+            }
+            
+            const weekStartStr = weekStart.toISOString().slice(0, 10);
+            const weekEndStr = weekEnd.toISOString().slice(0, 10);
+            
+            // Get revenue for this week
+            const weekRevenue = await getAsync(
+                `
+                SELECT COALESCE(SUM(final_total), 0) AS total
+                FROM Invoices
+                WHERE DATE(invoice_date) BETWEEN DATE(?) AND DATE(?)
+            `,
+                [weekStartStr, weekEndStr]
+            );
+            
+            // Get expenses for this week
+            const weekExpenses = await getAsync(
+                `
+                SELECT COALESCE(SUM(amount), 0) AS total
+                FROM Expenses
+                WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
+            `,
+                [weekStartStr, weekEndStr]
+            );
+            
+            weeks.push({
+                week: weekNum + 1,
+                weekStart: weekStartStr,
+                weekEnd: weekEndStr,
+                revenue: Number(weekRevenue?.total || 0),
+                expenses: Number(weekExpenses?.total || 0),
+            });
+        }
+
         const totalRevenue = Number(revenueRow.revenue || 0);
         const totalExpenses = Number(expenseRow.expenses || 0);
         const netProfit = totalRevenue - totalExpenses;
@@ -2134,6 +2197,11 @@ router.get("/dashboard", async (req, res) => {
             totalExpenses,
             netProfit,
             activeJobs,
+            jobStatuses: jobStatuses.map((row) => ({
+                status: row.status,
+                count: Number(row.count || 0),
+            })),
+            weeklyData: weeks,
         });
     } catch (error) {
         res.status(500).json({ error: error.message });

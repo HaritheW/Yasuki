@@ -15,7 +15,7 @@ import {
   XCircle,
   BarChart3,
 } from "lucide-react";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -79,6 +79,17 @@ type DashboardStats = {
   totalExpenses: number;
   netProfit: number;
   activeJobs: number;
+  jobStatuses: Array<{
+    status: JobStatus;
+    count: number;
+  }>;
+  weeklyData: Array<{
+    week: number;
+    weekStart: string;
+    weekEnd: string;
+    revenue: number;
+    expenses: number;
+  }>;
 };
 
 type JobStatus = "Pending" | "In Progress" | "Completed" | "Cancelled";
@@ -478,6 +489,40 @@ const Dashboard = () => {
     const years = Math.floor(diffDays / 365);
     return `${years} year${years > 1 ? "s" : ""} ago`;
   };
+
+  // Job status colors matching the Jobs page badge styles
+  const JOB_STATUS_COLORS: Record<JobStatus, string> = {
+    Pending: "hsl(220, 14%, 70%)",
+    "In Progress": "hsl(var(--warning))",
+    Completed: "hsl(var(--success))",
+    Cancelled: "hsl(var(--destructive))",
+  };
+
+  // Transform job statuses for pie chart
+  const jobStatusChartData = useMemo(() => {
+    if (!dashboardStats?.jobStatuses) return [];
+    
+    const statusOrder: JobStatus[] = ["Pending", "In Progress", "Completed", "Cancelled"];
+    return statusOrder.map((status) => {
+      const statusData = dashboardStats.jobStatuses.find((s) => s.status === status);
+      return {
+        name: status,
+        value: statusData?.count || 0,
+        color: JOB_STATUS_COLORS[status],
+      };
+    }).filter((item) => item.value > 0); // Only show statuses with jobs
+  }, [dashboardStats?.jobStatuses]);
+
+  // Transform weekly data for Revenue vs Expenses chart
+  const weeklyChartData = useMemo(() => {
+    if (!dashboardStats?.weeklyData) return [];
+    
+    return dashboardStats.weeklyData.map((week) => ({
+      week: `Week ${week.week}`,
+      revenue: Number(week.revenue.toFixed(2)),
+      expenses: Number(week.expenses.toFixed(2)),
+    }));
+  }, [dashboardStats?.weeklyData]);
 
   const handleAddCustomer = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1166,38 +1211,97 @@ const Dashboard = () => {
         <Card>
           <CardHeader>
             <CardTitle>Revenue vs Expenses</CardTitle>
-            <CardDescription>Monthly comparison for the past 6 months</CardDescription>
+            <CardDescription>Weekly breakdown for {selectedMonthLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={revenueData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="revenue" stroke="hsl(var(--chart-1))" strokeWidth={2} />
-                <Line type="monotone" dataKey="expenses" stroke="hsl(var(--chart-3))" strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
+            {dashboardStatsLoading ? (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                Loading...
+              </div>
+            ) : dashboardStatsError ? (
+              <div className="flex items-center justify-center h-[300px] text-destructive">
+                Failed to load revenue and expenses data
+              </div>
+            ) : weeklyChartData.length === 0 ? (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                No data available for {selectedMonthLabel}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={weeklyChartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="week" />
+                  <YAxis />
+                  <Tooltip 
+                    formatter={(value: number) => formatDashboardCurrency(value)}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="revenue" 
+                    stroke="hsl(var(--chart-1))" 
+                    strokeWidth={2}
+                    name="Revenue"
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="expenses" 
+                    stroke="hsl(var(--chart-3))" 
+                    strokeWidth={2}
+                    name="Expenses"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
             <CardTitle>Job Status Overview</CardTitle>
-            <CardDescription>Weekly job completion status</CardDescription>
+            <CardDescription>Job status distribution for {selectedMonthLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={jobData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="day" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="completed" fill="hsl(var(--chart-2))" />
-                <Bar dataKey="pending" fill="hsl(var(--chart-3))" />
-              </BarChart>
-            </ResponsiveContainer>
+            {dashboardStatsLoading ? (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                Loading...
+              </div>
+            ) : dashboardStatsError ? (
+              <div className="flex items-center justify-center h-[300px] text-destructive">
+                Failed to load job status data
+              </div>
+            ) : jobStatusChartData.length === 0 ? (
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+                No jobs found for {selectedMonthLabel}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={350}>
+                <PieChart>
+                  <Pie
+                    data={jobStatusChartData}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ value, percent }) => `${value} (${(percent * 100).toFixed(0)}%)`}
+                    outerRadius={120}
+                    innerRadius={60}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    {jobStatusChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    formatter={(value: number) => [value, "Jobs"]}
+                    labelFormatter={(label) => `Status: ${label}`}
+                  />
+                  <Legend 
+                    formatter={(value) => value}
+                    iconType="circle"
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
       </div>
