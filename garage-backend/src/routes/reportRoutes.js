@@ -1,5 +1,7 @@
 const express = require("express");
 const PDFDocument = require("pdfkit");
+const fs = require("fs");
+const path = require("path");
 const router = express.Router();
 const db = require("../../database/db");
 
@@ -222,11 +224,19 @@ const fetchInventoryReport = async (range) => {
 
 const renderExpensePdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 40, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
+
+        // Colors
+        const PRIMARY = "#B91C1C";
+        const DARK = "#111827";
+        const GRAY = "#6B7280";
+        const LIGHT = "#F9FAFB";
+        const BORDER = "#E5E7EB";
+        const CHART_COLORS = ["#B91C1C", "#2563EB", "#059669", "#D97706", "#7C3AED", "#DB2777", "#0891B2", "#65A30D"];
 
         const formatCurrency = (value) =>
             `LKR ${Number(value || 0).toLocaleString("en-US", {
@@ -240,211 +250,102 @@ const renderExpensePdf = (report) =>
                 : parsed.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
         };
 
-        const setFont = ({ size = 10, bold = false, color = "#111827" } = {}) => {
-            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(size).fillColor(color);
-        };
+        const margin = 40;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
 
-        // Header band
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        doc.save();
-        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 58).fill("#0f172a");
-        doc.restore();
-        doc.moveDown(0.2);
-        setFont({ size: 22, bold: true, color: "#ffffff" });
-        doc.text("Expense Report", doc.page.margins.left + 8, doc.page.margins.top + 12);
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}`, {
-            align: "left",
-            lineGap: 2,
-        });
-        doc.text(
-            `Generated: ${new Date().toLocaleDateString("en-GB", {
-                year: "numeric",
-                month: "short",
-                day: "2-digit",
-            })}`
-        );
-        doc.moveDown(2);
-
-        // Summary band
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
-            doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
-            doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
-        };
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Expenses",
-            formatCurrency(report.totals.totalAmount),
-            `${report.expenses.length} entr${report.expenses.length === 1 ? "y" : "ies"}`
-        );
-
-        const topCategory = report.categories[0];
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Top Category",
-            topCategory ? `${topCategory.category}` : "None",
-            topCategory ? formatCurrency(topCategory.total) : "No spend recorded"
-        );
-
-        const paidStatus = report.statuses.find((s) => (s.status || "").toLowerCase() === "paid");
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Paid Amount",
-            paidStatus ? formatCurrency(paidStatus.total) : formatCurrency(0),
-            paidStatus ? `${paidStatus.count} paid` : "No paid expenses"
-        );
-
-        doc.moveDown(6);
-
-        const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
-            doc.text(label, { continued: false });
-            doc.moveDown(0.4);
-        };
-
-        // Categories table
-        sectionTitle("By Category");
-        if (!report.categories.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No expenses recorded in this period.");
-        } else {
-            const widths = [200, 80, 80];
-            const headers = ["Category", "Entries", "Amount"];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            headers.forEach((title, idx) => {
-                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.categories.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
+        // Watermark logo
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
                 doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
+            doc.opacity(0.08);
+            doc.image(logoPath, (pageWidth - 350) / 2, (doc.page.height - 200) / 2, { width: 350 });
                 doc.restore();
-                const values = [
-                    row.category,
-                    `${row.count}`,
-                    formatCurrency(row.total),
-                ];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+            doc.opacity(1);
         }
 
+        // Header
+        doc.font("Helvetica-Bold").fontSize(18).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", margin, 35, { width: contentWidth, align: "center" });
+        
+            doc.moveDown(0.3);
+        doc.font("Helvetica-Bold").fontSize(20).fillColor(DARK);
+        doc.text("EXPENSE REPORT", margin, doc.y, { width: contentWidth, align: "center" });
+        
+            doc.moveDown(0.2);
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}  |  Generated: ${new Date().toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" })}`, { align: "center" });
+        
+        doc.moveDown(0.5);
+        doc.moveTo(margin, doc.y).lineTo(pageWidth - margin, doc.y).strokeColor(BORDER).stroke();
         doc.moveDown(0.8);
 
-        // Status table
-        sectionTitle("By Payment Status");
-        if (!report.statuses.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No payment status data for this period.");
-        } else {
-            const widths = [140, 80, 100];
-            const headers = ["Status", "Entries", "Amount"];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            headers.forEach((title, idx) => {
-                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.statuses.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [
-                    (row.status || "unspecified").toUpperCase(),
-                    `${row.count}`,
-                    formatCurrency(row.total),
-                ];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
-        }
-
-        doc.addPage();
-
-        // Detail table
-        sectionTitle("Expense Details");
-
-        const header = ["Date", "Description", "Category", "Amount", "Status"];
-        const columnWidths = [70, 170, 100, 90, 70];
-        const startX = doc.page.margins.left;
-        setFont({ size: 9, bold: true, color: "#475569" });
-        header.forEach((title, idx) => {
-            doc.text(title, startX + columnWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: columnWidths[idx],
-            });
-        });
+        // Helper function to draw centered table
+        const drawCenteredTable = (title, headers, widths, data, rowHeight = 16) => {
+            const tableWidth = widths.reduce((a, b) => a + b, 0);
+            const tableX = margin + (contentWidth - tableWidth) / 2;
+            const headerHeight = 20;
+            
+            doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+            doc.text(title, margin, doc.y, { width: contentWidth, align: "center" });
         doc.moveDown(0.3);
-        doc.strokeColor("#e2e8f0").moveTo(startX, doc.y).lineTo(startX + columnWidths.reduce((a, b) => a + b, 0), doc.y).stroke();
-        doc.moveDown(0.2);
-
-        const maxRows = 120;
-        const rows = report.expenses.slice(0, maxRows);
-        if (!rows.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No expenses to display for the selected period.");
-        } else {
-            setFont({ size: 9, color: "#0f172a" });
-            rows.forEach((entry, idx) => {
-                const rowStartY = doc.y;
-                if (idx % 2 === 0) {
-                    doc.save();
-                    doc.rect(startX, rowStartY - 2, columnWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                    doc.restore();
-                }
-                const values = [
-                    formatDate(entry.expense_date),
-                    entry.description || "—",
-                    entry.category || "Uncategorized",
-                    formatCurrency(entry.amount),
-                    (entry.payment_status || "pending").toUpperCase(),
-                ];
-                values.forEach((val, colIdx) => {
-                    doc.text(val, startX + columnWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                        width: columnWidths[colIdx] - 8,
-                    });
-                });
-                doc.moveDown(0.8);
+            
+            const startY = doc.y;
+            
+            doc.rect(tableX, startY, tableWidth, headerHeight).fill(DARK);
+            
+            let hx = tableX;
+            headers.forEach((hTitle, idx) => {
+                doc.rect(hx, startY, widths[idx], headerHeight).strokeColor("#374151").lineWidth(1).stroke();
+                doc.font("Helvetica-Bold").fontSize(7).fillColor("#ffffff");
+                doc.text(hTitle, hx + 4, startY + 5, { width: widths[idx] - 8 });
+                hx += widths[idx];
             });
+            doc.y = startY + headerHeight;
+            
+            data.forEach((rowData, rowIndex) => {
+                const rowY = doc.y;
+                
+                if (rowIndex % 2 === 0) {
+                    doc.rect(tableX, rowY, tableWidth, rowHeight).fill(LIGHT);
+        } else {
+                    doc.rect(tableX, rowY, tableWidth, rowHeight).fill("#ffffff");
+                }
+                
+                let cx = tableX;
+                rowData.forEach((val, colIdx) => {
+                    doc.rect(cx, rowY, widths[colIdx], rowHeight).strokeColor(BORDER).lineWidth(0.5).stroke();
+                    doc.font("Helvetica").fontSize(7).fillColor(DARK);
+                    doc.text(val, cx + 4, rowY + 4, { width: widths[colIdx] - 8 });
+                    cx += widths[colIdx];
+                });
+                
+                doc.y = rowY + rowHeight;
+            });
+            
+            doc.rect(tableX, startY, tableWidth, headerHeight + data.length * rowHeight).strokeColor(DARK).lineWidth(1).stroke();
+            doc.moveDown(0.6);
+        };
+
+        // Expense Details table
+        const maxRows = 15;
+        const expenseRows = report.expenses.slice(0, maxRows);
+        
+        if (expenseRows.length) {
+            const detailHeaders = ["Date", "Description", "Category", "Amount", "Status"];
+            const detailWidths = [65, 145, 95, 80, 50];
+            const detailData = expenseRows.map(entry => [
+                formatDate(entry.expense_date),
+                (entry.description || "—").substring(0, 24),
+                (entry.category || "Uncategorized").substring(0, 14),
+                formatCurrency(entry.amount),
+                (entry.payment_status || "pending").substring(0, 6).toUpperCase()
+            ]);
+            drawCenteredTable("Expense Details", detailHeaders, detailWidths, detailData);
 
             if (report.expenses.length > maxRows) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.expenses.length - maxRows} more entries not shown`, startX, doc.y);
+                doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+                doc.text(`+ ${report.expenses.length - maxRows} more entries not shown`, { align: "center" });
             }
         }
 
@@ -453,175 +354,126 @@ const renderExpensePdf = (report) =>
 
 const renderJobPdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 40, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
 
+        const PRIMARY = "#B91C1C";
+        const DARK = "#111827";
+        const GRAY = "#6B7280";
+        const LIGHT = "#F9FAFB";
+        const BORDER = "#E5E7EB";
+        const CHART_COLORS = ["#059669", "#D97706", "#B91C1C", "#2563EB", "#7C3AED", "#DB2777"];
+        const margin = 40;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
+
         const formatDate = (value) => {
             const parsed = new Date(value);
-            return Number.isNaN(parsed.getTime())
-                ? value
-                : parsed.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
+            return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
         };
-        const formatCurrency = (value) =>
-            `LKR ${Number(value || 0).toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-            })}`;
-        const setFont = ({ size = 10, bold = false, color = "#111827" } = {}) =>
-            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(size).fillColor(color);
+        const formatCurrency = (value) => `LKR ${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        doc.save();
-        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 58).fill("#0f172a");
-        doc.restore();
-        setFont({ size: 22, bold: true, color: "#ffffff" });
-        doc.text("Job Report", doc.page.margins.left + 8, doc.page.margins.top + 12);
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}`);
-        doc.text(
-            `Generated: ${new Date().toLocaleDateString("en-GB", {
-                year: "numeric",
-                month: "short",
-                day: "2-digit",
-            })}`
-        );
-        doc.moveDown(2);
-
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
+        // Professional pie chart drawing function
+        // Watermark
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
             doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
+            doc.opacity(0.08);
+            doc.image(logoPath, (pageWidth - 350) / 2, (doc.page.height - 200) / 2, { width: 350 });
             doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
-        };
-
-        const completed = report.statuses.find((s) => s.status === "Completed");
-        const pending = report.statuses.find((s) => s.status === "Pending");
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Jobs",
-            `${report.totals.jobCount}`,
-            `${completed ? `${completed.count} completed • ` : ""}${report.range.startDate} → ${report.range.endDate}`
-        );
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Revenue (invoiced)",
-            formatCurrency(report.totals.completedRevenue),
-            "Sum of invoices in period"
-        );
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Pending Jobs",
-            pending ? `${pending.count}` : "0",
-            pending ? "Awaiting completion" : "No pending jobs"
-        );
-
-        doc.moveDown(6);
-        const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
-            doc.text(label);
-            doc.moveDown(0.4);
-        };
-
-        // Status table
-        sectionTitle("By Status");
-        if (!report.statuses.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No jobs recorded in this period.");
-        } else {
-            const widths = [200, 80];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            ["Status", "Count"].forEach((title, idx) => {
-                doc.text(title, startX + widths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                    width: widths[idx],
-                });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.statuses.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [row.status, `${row.count}`];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+            doc.opacity(1);
         }
 
-        doc.addPage();
-        sectionTitle("Job Details");
-        const header = ["Created", "Job", "Customer", "Plate", "Status", "Invoice", "Amount"];
-        const colWidths = [70, 130, 110, 60, 70, 70, 70];
-        const startX = doc.page.margins.left;
-        setFont({ size: 9, bold: true, color: "#475569" });
-        header.forEach((title, idx) => {
-            doc.text(title, startX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: colWidths[idx],
-            });
-        });
+        // Header
+        doc.font("Helvetica-Bold").fontSize(18).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", margin, 35, { width: contentWidth, align: "center" });
         doc.moveDown(0.3);
-        doc.strokeColor("#e2e8f0")
-            .moveTo(startX, doc.y)
-            .lineTo(startX + colWidths.reduce((a, b) => a + b, 0), doc.y)
-            .stroke();
+        doc.font("Helvetica-Bold").fontSize(20).fillColor(DARK);
+        doc.text("JOB REPORT", margin, doc.y, { width: contentWidth, align: "center" });
         doc.moveDown(0.2);
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}  |  Generated: ${new Date().toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" })}`, { align: "center" });
+        doc.moveDown(0.5);
+        doc.moveTo(margin, doc.y).lineTo(pageWidth - margin, doc.y).strokeColor(BORDER).stroke();
+        doc.moveDown(0.8);
 
-        const rows = report.jobs.slice(0, 120);
-        if (!rows.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No jobs to display for the selected period.");
-        } else {
-            setFont({ size: 9, color: "#0f172a" });
-            rows.forEach((job, idx) => {
-                const rowStartY = doc.y;
-                if (idx % 2 === 0) {
-                    doc.save();
-                    doc.rect(startX, rowStartY - 2, colWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                    doc.restore();
-                }
-                const values = [
-                    formatDate(job.created_at),
-                    job.description || "—",
-                    job.customer_name || "Walk-in",
-                    job.plate || "—",
-                    job.job_status,
-                    job.invoice_no || "—",
-                    job.final_total ? formatCurrency(job.final_total) : "—",
-                ];
-                values.forEach((val, colIdx) => {
-                    doc.text(val, startX + colWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                        width: colWidths[colIdx] - 8,
-                    });
-                });
-                doc.moveDown(0.8);
+        // Helper function to draw centered table
+        const drawCenteredTable = (title, headers, widths, data, rowHeight = 16) => {
+            const tableWidth = widths.reduce((a, b) => a + b, 0);
+            const tableX = margin + (contentWidth - tableWidth) / 2;
+            const headerHeight = 20;
+            
+            doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+            doc.text(title, margin, doc.y, { width: contentWidth, align: "center" });
+            doc.moveDown(0.3);
+            
+            const startY = doc.y;
+            
+            doc.rect(tableX, startY, tableWidth, headerHeight).fill(DARK);
+            
+            let hx = tableX;
+            headers.forEach((hTitle, idx) => {
+                doc.rect(hx, startY, widths[idx], headerHeight).strokeColor("#374151").lineWidth(1).stroke();
+                doc.font("Helvetica-Bold").fontSize(7).fillColor("#ffffff");
+                doc.text(hTitle, hx + 4, startY + 5, { width: widths[idx] - 8 });
+                hx += widths[idx];
             });
+            doc.y = startY + headerHeight;
+            
+            data.forEach((rowData, rowIndex) => {
+                const rowY = doc.y;
+                
+                if (rowIndex % 2 === 0) {
+                    doc.rect(tableX, rowY, tableWidth, rowHeight).fill(LIGHT);
+        } else {
+                    doc.rect(tableX, rowY, tableWidth, rowHeight).fill("#ffffff");
+                }
+                
+                let cx = tableX;
+                rowData.forEach((val, colIdx) => {
+                    doc.rect(cx, rowY, widths[colIdx], rowHeight).strokeColor(BORDER).lineWidth(0.5).stroke();
+                    doc.font("Helvetica").fontSize(7).fillColor(DARK);
+                    doc.text(val, cx + 4, rowY + 4, { width: widths[colIdx] - 8 });
+                    cx += widths[colIdx];
+                });
+                
+                doc.y = rowY + rowHeight;
+            });
+            
+            doc.rect(tableX, startY, tableWidth, headerHeight + data.length * rowHeight).strokeColor(DARK).lineWidth(1).stroke();
+            doc.moveDown(0.6);
+        };
 
-            if (report.jobs.length > rows.length) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.jobs.length - rows.length} more entries not shown`, startX, doc.y);
+        // Job Details table
+        const maxRows = 15;
+        const jobRows = report.jobs.slice(0, maxRows);
+        
+        if (jobRows.length) {
+            const detailHeaders = ["Date", "Description", "Customer", "Plate", "Status", "Amount"];
+            const detailWidths = [65, 130, 95, 55, 55, 70];
+            const detailData = jobRows.map(job => [
+                formatDate(job.created_at),
+                (job.description || "—").substring(0, 20),
+                (job.customer_name || "Walk-in").substring(0, 14),
+                (job.plate || "—").substring(0, 8),
+                job.job_status.substring(0, 8),
+                job.final_total ? formatCurrency(job.final_total) : "—",
+            ]);
+            drawCenteredTable("Job Details", detailHeaders, detailWidths, detailData);
+
+            if (report.jobs.length > maxRows) {
+                doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+                doc.text(`+ ${report.jobs.length - maxRows} more entries not shown`, { align: "center" });
             }
+        } else {
+            doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+            doc.text("Job Details", { align: "center" });
+            doc.moveDown(0.3);
+            doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+            doc.text("No jobs to display for this period.", { align: "center" });
         }
 
         doc.end();
@@ -629,159 +481,121 @@ const renderJobPdf = (report) =>
 
 const renderInventoryPdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 40, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
 
-        const setFont = ({ size = 10, bold = false, color = "#111827" } = {}) =>
-            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(size).fillColor(color);
+        const PRIMARY = "#B91C1C";
+        const DARK = "#111827";
+        const GRAY = "#6B7280";
+        const LIGHT = "#F9FAFB";
+        const BORDER = "#E5E7EB";
+        const WARNING = "#F59E0B";
+        const SUCCESS = "#059669";
+        const CHART_COLORS = ["#2563EB", "#059669", "#D97706", "#B91C1C", "#7C3AED", "#DB2777"];
+        const margin = 40;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
 
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        doc.save();
-        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 58).fill("#0f172a");
-        doc.restore();
-        setFont({ size: 22, bold: true, color: "#ffffff" });
-        doc.text("Inventory Report", doc.page.margins.left + 8, doc.page.margins.top + 12);
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}`);
-        doc.text(
-            `Generated: ${new Date().toLocaleDateString("en-GB", {
-                year: "numeric",
-                month: "short",
-                day: "2-digit",
-            })}`
-        );
-        doc.moveDown(2);
-
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
-            doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
-            doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
-        };
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Items",
-            `${report.totals.itemCount}`,
-            "Tracked inventory records"
-        );
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Low Stock",
-            `${report.totals.lowStockCount}`,
-            report.lowStock.length ? "Needs reorder" : "All above reorder level"
-        );
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Most Used",
-            report.mostUsed[0] ? report.mostUsed[0].name : "No usage",
-            report.mostUsed[0] ? `Used ${report.mostUsed[0].total_used}` : "No usage this period"
-        );
-
-        doc.moveDown(6);
-        const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
-            doc.text(label);
-            doc.moveDown(0.4);
-        };
-
-        // Most used
-        sectionTitle("Top Usage");
-        if (!report.mostUsed.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No usage recorded in this period.");
-        } else {
-            const widths = [200, 80, 80];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            ["Item", "Used", "Type"].forEach((title, idx) => {
-                doc.text(title, startX + widths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                    width: widths[idx],
-                });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.mostUsed.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [row.name, `${row.total_used}`, row.type];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+        // Watermark
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
+                    doc.save();
+            doc.opacity(0.08);
+            doc.image(logoPath, (pageWidth - 350) / 2, (doc.page.height - 200) / 2, { width: 350 });
+                    doc.restore();
+            doc.opacity(1);
         }
 
-        doc.addPage();
-        sectionTitle("Inventory Details");
-        const header = ["Item", "Qty", "Reorder", "Used", "Low"];
-        const colWidths = [180, 60, 70, 70, 50];
-        const startX = doc.page.margins.left;
-        setFont({ size: 9, bold: true, color: "#475569" });
-        header.forEach((title, idx) => {
-            doc.text(title, startX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: colWidths[idx],
-            });
-        });
+        // Header
+        doc.font("Helvetica-Bold").fontSize(18).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", margin, 35, { width: contentWidth, align: "center" });
         doc.moveDown(0.3);
-        doc.strokeColor("#e2e8f0")
-            .moveTo(startX, doc.y)
-            .lineTo(startX + colWidths.reduce((a, b) => a + b, 0), doc.y)
-            .stroke();
+        doc.font("Helvetica-Bold").fontSize(20).fillColor(DARK);
+        doc.text("INVENTORY REPORT", margin, doc.y, { width: contentWidth, align: "center" });
         doc.moveDown(0.2);
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}  |  Generated: ${new Date().toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" })}`, { align: "center" });
+        doc.moveDown(0.5);
+        doc.moveTo(margin, doc.y).lineTo(pageWidth - margin, doc.y).strokeColor(BORDER).stroke();
+        doc.moveDown(0.8);
 
-        const rows = report.items.slice(0, 160);
-        if (!rows.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No inventory records found.");
-        } else {
-            setFont({ size: 9, color: "#0f172a" });
-            rows.forEach((item, idx) => {
-                const rowStartY = doc.y;
-                if (idx % 2 === 0) {
-                    doc.save();
-                    doc.rect(startX, rowStartY - 2, colWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                    doc.restore();
-                }
-                const values = [
-                    item.name,
-                    `${item.quantity}`,
-                    `${item.reorder_level}`,
-                    `${item.total_used}`,
-                    item.low_stock ? "Yes" : "No",
-                ];
-                values.forEach((val, colIdx) => {
-                    doc.text(val, startX + colWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                        width: colWidths[colIdx] - 8,
-                    });
-                });
-                doc.moveDown(0.8);
+        // Helper function to draw centered table
+        const drawCenteredTable = (title, headers, widths, data, rowHeight = 16, highlightCol = -1) => {
+            const tableWidth = widths.reduce((a, b) => a + b, 0);
+            const tableX = margin + (contentWidth - tableWidth) / 2;
+            const headerHeight = 20;
+            
+            doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+            doc.text(title, margin, doc.y, { width: contentWidth, align: "center" });
+            doc.moveDown(0.3);
+            
+            const startY = doc.y;
+            
+            doc.rect(tableX, startY, tableWidth, headerHeight).fill(DARK);
+            
+            let hx = tableX;
+            headers.forEach((hTitle, idx) => {
+                doc.rect(hx, startY, widths[idx], headerHeight).strokeColor("#374151").lineWidth(1).stroke();
+                doc.font("Helvetica-Bold").fontSize(7).fillColor("#ffffff");
+                doc.text(hTitle, hx + 4, startY + 5, { width: widths[idx] - 8 });
+                hx += widths[idx];
             });
+            doc.y = startY + headerHeight;
+            
+            data.forEach((rowData, rowIndex) => {
+                const rowY = doc.y;
+                
+                if (rowIndex % 2 === 0) {
+                    doc.rect(tableX, rowY, tableWidth, rowHeight).fill(LIGHT);
+                } else {
+                    doc.rect(tableX, rowY, tableWidth, rowHeight).fill("#ffffff");
+                }
+                
+                let cx = tableX;
+                rowData.forEach((val, colIdx) => {
+                    doc.rect(cx, rowY, widths[colIdx], rowHeight).strokeColor(BORDER).lineWidth(0.5).stroke();
+                    const isWarningCell = highlightCol === colIdx && val === "LOW";
+                    doc.font("Helvetica").fontSize(7).fillColor(isWarningCell ? WARNING : DARK);
+                    doc.text(val, cx + 4, rowY + 4, { width: widths[colIdx] - 8 });
+                    cx += widths[colIdx];
+                });
+                
+                doc.y = rowY + rowHeight;
+            });
+            
+            doc.rect(tableX, startY, tableWidth, headerHeight + data.length * rowHeight).strokeColor(DARK).lineWidth(1).stroke();
+            doc.moveDown(0.6);
+        };
 
-            if (report.items.length > rows.length) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.items.length - rows.length} more entries not shown`, startX, doc.y);
+        // Inventory Details table
+        const maxRows = 15;
+        const inventoryRows = report.items.slice(0, maxRows);
+        
+        if (inventoryRows.length) {
+            const detailHeaders = ["Item Name", "Qty", "Reorder", "Used", "Status"];
+            const detailWidths = [175, 50, 60, 50, 50];
+            const detailData = inventoryRows.map(item => [
+                item.name.substring(0, 26),
+                `${item.quantity}`,
+                `${item.reorder_level}`,
+                `${item.total_used}`,
+                item.low_stock ? "LOW" : "OK"
+            ]);
+            drawCenteredTable("Inventory Details", detailHeaders, detailWidths, detailData, 16, 4);
+
+            if (report.items.length > maxRows) {
+                doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+                doc.text(`+ ${report.items.length - maxRows} more items not shown`, { align: "center" });
             }
+        } else {
+            doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+            doc.text("Inventory Details", { align: "center" });
+            doc.moveDown(0.3);
+            doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+            doc.text("No inventory records found.", { align: "center" });
         }
 
         doc.end();
