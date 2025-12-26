@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { Download, FileText, TrendingUp, Calendar as CalendarIcon, FileSpreadsheet } from "lucide-react";
+import { FileText, TrendingUp, Calendar as CalendarIcon, FileSpreadsheet } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { apiFetch, API_BASE_URL } from "@/lib/api";
@@ -502,10 +502,6 @@ const Reports = () => {
           <h1 className="text-3xl font-bold text-foreground">Reports</h1>
           <p className="text-muted-foreground">Generate and view business reports</p>
         </div>
-        <Button className="bg-primary hover:bg-primary/90">
-          <Download className="mr-2 h-4 w-4" />
-          Export Report
-        </Button>
       </div>
 
       <div className="rounded-md border bg-muted/20 px-4 py-3 text-sm text-muted-foreground flex flex-wrap items-center gap-2">
