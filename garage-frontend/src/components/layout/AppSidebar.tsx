@@ -40,7 +40,7 @@ export function AppSidebar() {
       <SidebarHeader className="border-b border-sidebar-border p-4">
         <div className="flex items-center gap-2">
           <Settings className="h-6 w-6 text-sidebar-primary" />
-          <span className="font-semibold text-sidebar-foreground">Garage ERP</span>
+          <span className="font-semibold text-sidebar-foreground">Yasuki Motors</span>
         </div>
       </SidebarHeader>
       <SidebarContent>
