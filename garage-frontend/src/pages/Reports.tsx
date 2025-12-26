@@ -218,8 +218,7 @@ const Reports = () => {
     }
     if (timeframe === "monthly") {
       const fromMonth = activeRange.from ? startOfMonth(activeRange.from) : null;
-      const toMonth = activeRange.to ? startOfMonth(activeRange.to) : fromMonth;
-      return `${formatMonthYear(fromMonth)} - ${formatMonthYear(toMonth)}`;
+      return formatMonthYear(fromMonth);
     }
     if (timeframe === "yearly") {
       return `Year ${singleDate.getFullYear()}`;
@@ -227,14 +226,9 @@ const Reports = () => {
     return `${fromLabel} - ${toLabel}`;
   }, [activeRange, timeframe]);
 
-  const monthlyStart = useMemo(() => {
+  const selectedMonth = useMemo(() => {
     if (timeframe !== "monthly") return null;
     return dateRange?.from ? startOfMonth(dateRange.from) : startOfMonth(today);
-  }, [timeframe, dateRange, today]);
-
-  const monthlyEnd = useMemo(() => {
-    if (timeframe !== "monthly") return null;
-    return dateRange?.to ? startOfMonth(dateRange.to) : startOfMonth(today);
   }, [timeframe, dateRange, today]);
 
   const activeStartDate = toISODateLocal(activeRange?.from);
@@ -484,21 +478,10 @@ const Reports = () => {
   };
 
 
-  const handleMonthSelection = (value: string, kind: "start" | "end") => {
+  const handleMonthSelection = (value: string) => {
     const option = monthOptions.find((opt) => opt.start.toISOString() === value);
     if (!option) return;
-
-    if (kind === "start") {
-      const currentEnd = monthlyEnd ?? option.start;
-      const adjustedEnd =
-        currentEnd < option.start ? endOfMonth(option.start) : endOfMonth(currentEnd);
-      setDateRange({ from: option.start, to: adjustedEnd });
-    } else {
-      const currentStart = monthlyStart ?? option.start;
-      const adjustedStart =
-        currentStart > option.start ? option.start : currentStart;
-      setDateRange({ from: adjustedStart, to: option.end });
-    }
+    setDateRange({ from: option.start, to: option.end });
   };
 
   return (
@@ -588,41 +571,24 @@ const Reports = () => {
                 </p>
               </div>
             ) : timeframe === "monthly" ? (
-              <div className="space-y-3">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Select
-                    value={monthlyStart ? monthlyStart.toISOString() : undefined}
-                    onValueChange={(value) => handleMonthSelection(value, "start")}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select start month" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {monthOptions.map((option) => (
-                        <SelectItem key={option.start.toISOString()} value={option.start.toISOString()}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={monthlyEnd ? monthlyEnd.toISOString() : undefined}
-                    onValueChange={(value) => handleMonthSelection(value, "end")}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select end month" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {monthOptions.map((option) => (
-                        <SelectItem key={option.start.toISOString()} value={option.start.toISOString()}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="space-y-2">
+                <Select
+                  value={selectedMonth ? selectedMonth.toISOString() : undefined}
+                  onValueChange={(value) => handleMonthSelection(value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select month" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {monthOptions.map((option) => (
+                      <SelectItem key={option.start.toISOString()} value={option.start.toISOString()}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
-                  Pick the first and last month to include. Each report spans full calendar months.
+                  Pick a month to generate the monthly report.
                 </p>
               </div>
             ) : timeframe === "yearly" ? (
