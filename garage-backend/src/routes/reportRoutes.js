@@ -2279,6 +2279,20 @@ router.get("/dashboard", async (req, res) => {
             [month, year]
         );
 
+        // Total Advances - sum of advance deductions for invoices in the month
+        const advancesRow = await getAsync(
+            `
+            SELECT COALESCE(SUM(InvoiceExtraItems.amount), 0) AS advances
+            FROM InvoiceExtraItems
+            INNER JOIN Invoices ON InvoiceExtraItems.invoice_id = Invoices.id
+            WHERE InvoiceExtraItems.type = 'deduction' 
+            AND LOWER(InvoiceExtraItems.label) = 'advance'
+            AND strftime('%m', Invoices.invoice_date) = printf('%02d', ?) 
+            AND strftime('%Y', Invoices.invoice_date) = ?
+        `,
+            [month, year]
+        );
+
         // Total Expenses - sum of expenses for the month
         const expenseRow = await getAsync(
             `
@@ -2334,8 +2348,8 @@ router.get("/dashboard", async (req, res) => {
             const weekStartStr = weekStart.toISOString().slice(0, 10);
             const weekEndStr = weekEnd.toISOString().slice(0, 10);
             
-            // Get revenue for this week
-            const weekRevenue = await getAsync(
+            // Get base revenue for this week
+            const weekRevenueBase = await getAsync(
                 `
                 SELECT COALESCE(SUM(final_total), 0) AS total
                 FROM Invoices
@@ -2343,6 +2357,23 @@ router.get("/dashboard", async (req, res) => {
             `,
                 [weekStartStr, weekEndStr]
             );
+
+            // Get advances for this week
+            const weekAdvances = await getAsync(
+                `
+                SELECT COALESCE(SUM(InvoiceExtraItems.amount), 0) AS total
+                FROM InvoiceExtraItems
+                INNER JOIN Invoices ON InvoiceExtraItems.invoice_id = Invoices.id
+                WHERE InvoiceExtraItems.type = 'deduction' 
+                AND LOWER(InvoiceExtraItems.label) = 'advance'
+                AND DATE(Invoices.invoice_date) BETWEEN DATE(?) AND DATE(?)
+            `,
+                [weekStartStr, weekEndStr]
+            );
+
+            const weekRevenue = {
+                total: Number(weekRevenueBase?.total || 0) + Number(weekAdvances?.total || 0)
+            };
             
             // Get expenses for this week
             const weekExpenses = await getAsync(
@@ -2363,8 +2394,11 @@ router.get("/dashboard", async (req, res) => {
             });
         }
 
-        const totalRevenue = Number(revenueRow.revenue || 0);
+        const baseRevenue = Number(revenueRow.revenue || 0);
+        const advances = Number(advancesRow.advances || 0);
+        const totalRevenue = baseRevenue + advances;
         const totalExpenses = Number(expenseRow.expenses || 0);
+        // Net Profit = Total Revenue (including advances) - All Expenses
         const netProfit = totalRevenue - totalExpenses;
         const activeJobs = Number(activeJobsRow.count || 0);
 
