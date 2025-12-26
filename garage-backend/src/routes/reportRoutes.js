@@ -217,7 +217,14 @@ const fetchJobReport = async (range) => {
             Jobs.job_status,
             Jobs.created_at,
             Jobs.category,
+            Jobs.initial_amount,
+            Jobs.advance_amount,
+            Jobs.mileage,
+            Jobs.notes,
             Customers.name AS customer_name,
+            Vehicles.make AS vehicle_make,
+            Vehicles.model AS vehicle_model,
+            Vehicles.year AS vehicle_year,
             Vehicles.license_plate AS plate,
             Invoices.invoice_no,
             Invoices.final_total,
@@ -231,6 +238,37 @@ const fetchJobReport = async (range) => {
     `,
         [range.startDate, range.endDate]
     );
+
+    // Fetch technicians for all jobs
+    if (jobs.length > 0) {
+        const jobIds = jobs.map((j) => j.id);
+        const placeholders = jobIds.map(() => "?").join(", ");
+        const technicianRows = await allAsync(
+            `
+            SELECT
+                JobTechnicians.job_id,
+                Technicians.name
+            FROM JobTechnicians
+            INNER JOIN Technicians ON Technicians.id = JobTechnicians.technician_id
+            WHERE JobTechnicians.job_id IN (${placeholders})
+            ORDER BY Technicians.name ASC
+        `,
+            jobIds
+        );
+
+        const techniciansByJob = technicianRows.reduce((acc, row) => {
+            if (!acc[row.job_id]) {
+                acc[row.job_id] = [];
+            }
+            acc[row.job_id].push(row.name);
+            return acc;
+        }, {});
+
+        // Add technicians as comma-separated string to each job
+        jobs.forEach((job) => {
+            job.technicians = (techniciansByJob[job.id] || []).join(", ");
+        });
+    }
 
     const statuses = await allAsync(
         `
@@ -367,6 +405,9 @@ const fetchInventoryReport = async (range) => {
             InventoryItems.type,
             InventoryItems.quantity,
             InventoryItems.reorder_level,
+            InventoryItems.unit_cost,
+            InventoryItems.unit,
+            InventoryItems.description,
             COALESCE(usage_summary.total_used, 0) AS total_used,
             CASE WHEN InventoryItems.quantity <= InventoryItems.reorder_level THEN 1 ELSE 0 END AS low_stock
         FROM InventoryItems
@@ -578,6 +619,32 @@ const renderExpensePdf = (report) =>
                         .lineTo(cell.x, rowY + rowH)
                         .stroke();
                 }
+                const values = [
+                    (row.status || "unspecified").toUpperCase(),
+                    `${row.count}`,
+                    formatCurrency(row.total),
+                ];
+                values.forEach((val, idx) => {
+                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
+                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
+                });
+                doc.moveDown(0.8);
+            });
+        }
+
+        pdf.addPage();
+
+        // Detail table
+        sectionTitle("Expense Details");
+
+        const header = ["Date", "Description", "Category", "Amount", "Status", "Payment Method", "Remarks"];
+        const columnWidths = [60, 120, 70, 70, 55, 70, 90];
+        const startX = doc.page.margins.left;
+        const drawExpenseHeader = () => {
+        setFont({ size: 9, bold: true, color: "#475569" });
+        header.forEach((title, idx) => {
+            doc.text(title, startX + columnWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
+                width: columnWidths[idx],
             });
             // Right border
             doc.moveTo(rowX + contentWidth, rowY)
@@ -671,6 +738,19 @@ const renderExpensePdf = (report) =>
                     (entry.payment_status || "pending").toUpperCase(),
                     i % 2 === 0
                 );
+                    pdfTruncate(entry.description || "—", 28),
+                    pdfTruncate(entry.category || "Uncategorized", 15),
+                    formatCurrency(entry.amount),
+                    (entry.payment_status || "pending").toUpperCase(),
+                    pdfTruncate(entry.payment_method || "—", 14),
+                    pdfTruncate(entry.remarks || "—", 18),
+                ];
+                values.forEach((val, colIdx) => {
+                    doc.text(val, startX + columnWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
+                        width: columnWidths[colIdx] - 8,
+                    });
+                });
+                doc.moveDown(0.8);
             });
 
             if (report.expenses.length > maxRows) {
@@ -809,6 +889,17 @@ const renderJobPdf = (report) =>
                     .lineTo(cell.x, headerY + rowH)
                     .stroke();
             }
+        pdf.addPage();
+        sectionTitle("Job Details");
+        const header = ["Created", "Job", "Category", "Customer", "Vehicle", "Status", "Estimate", "Advance", "Mileage", "Technicians", "Invoice", "Amount"];
+        const colWidths = [60, 100, 60, 80, 80, 50, 60, 60, 50, 80, 60, 60];
+        const startX = doc.page.margins.left;
+        const drawJobHeader = () => {
+        setFont({ size: 9, bold: true, color: "#475569" });
+        header.forEach((title, idx) => {
+            doc.text(title, startX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
+                width: colWidths[idx],
+            });
         });
         doc.moveTo(margin + contentWidth, headerY)
             .lineTo(margin + contentWidth, headerY + rowH)
@@ -960,6 +1051,19 @@ const renderJobPdf = (report) =>
                     truncatedPlate,
                     job.job_status || "—",
                     truncatedInvoice,
+                const vehicleInfo = [job.vehicle_make, job.vehicle_model, job.vehicle_year].filter(Boolean).join(" ") || "—";
+                const values = [
+                    formatDate(job.created_at),
+                    pdfTruncate(job.description || "—", 20),
+                    pdfTruncate(job.category || "—", 12),
+                    pdfTruncate(job.customer_name || "Walk-in", 15),
+                    pdfTruncate(vehicleInfo || job.plate || "—", 15),
+                    job.job_status,
+                    job.initial_amount ? formatCurrency(job.initial_amount) : "—",
+                    job.advance_amount ? formatCurrency(job.advance_amount) : "—",
+                    job.mileage ? `${Number(job.mileage).toLocaleString()} km` : "—",
+                    pdfTruncate(job.technicians || "—", 15),
+                    pdfTruncate(job.invoice_no || "—", 10),
                     job.final_total ? formatCurrency(job.final_total) : "—",
                     i % 2 === 0
                 );
@@ -981,6 +1085,12 @@ const renderInventoryPdf = (report) =>
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
+        const pdf = attachPdfScaffold(doc, { title: "Inventory Report", range: report.range });
+        const setFont = pdf.setFont;
+        const formatCurrency = pdfFormatCurrency;
+
+        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        doc.moveDown(0.4);
 
         // ═══════════════════════════════════════════════════════════
         // CONFIGURATION
@@ -1105,6 +1215,17 @@ const renderInventoryPdf = (report) =>
                     .lineTo(cell.x, headerY + rowH)
                     .stroke();
             }
+        pdf.addPage();
+        sectionTitle("Inventory Details");
+        const header = ["Item", "Type", "Qty", "Unit", "Unit Cost", "Reorder", "Used", "Low", "Notes"];
+        const colWidths = [120, 50, 45, 50, 60, 50, 45, 35, 100];
+        const startX = doc.page.margins.left;
+        const drawInventoryHeader = () => {
+        setFont({ size: 9, bold: true, color: "#475569" });
+        header.forEach((title, idx) => {
+            doc.text(title, startX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
+                width: colWidths[idx],
+            });
         });
         doc.moveTo(margin + contentWidth, headerY)
             .lineTo(margin + contentWidth, headerY + rowH)
@@ -1273,6 +1394,23 @@ const renderInventoryPdf = (report) =>
                     truncatedNotes,
                     i % 2 === 0
                 );
+                const values = [
+                    pdfTruncate(item.name, 25),
+                    pdfTruncate(item.type || "—", 10),
+                    `${item.quantity}`,
+                    pdfTruncate(item.unit || "—", 10),
+                    item.unit_cost ? formatCurrency(item.unit_cost) : "—",
+                    `${item.reorder_level ?? "—"}`,
+                    `${item.total_used}`,
+                    item.low_stock ? "Yes" : "No",
+                    pdfTruncate(item.description || "—", 20),
+                ];
+                values.forEach((val, colIdx) => {
+                    doc.text(val, startX + colWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
+                        width: colWidths[colIdx] - 8,
+                    });
+                });
+                doc.moveDown(0.8);
             });
 
             if (report.items.length > maxRows) {
@@ -1535,6 +1673,8 @@ const renderJobExcel = async (report) => {
     
     // Details Sheet (match Job PDF table: Created, Job, Customer, Plate, Status, Invoice, Amount)
     const detailsSheet = workbook.addWorksheet("Job Details");
+    
+    const detailHeaders = ["ID", "Date", "Description", "Category", "Customer", "Vehicle", "Status", "Estimate", "Advance", "Mileage", "Technicians", "Notes", "Invoice No", "Total"];
     const pdfHeaders = ["Created", "Job", "Customer", "Plate", "Status", "Invoice", "Amount"];
     const headerRow = detailsSheet.getRow(1);
     pdfHeaders.forEach((header, idx) => {
@@ -1548,6 +1688,7 @@ const renderJobExcel = async (report) => {
 
     report.jobs.forEach((job, idx) => {
         const row = detailsSheet.getRow(idx + 2);
+        const vehicleInfo = [job.vehicle_make, job.vehicle_model, job.vehicle_year].filter(Boolean).join(" ") || job.plate || "N/A";
         row.getCell(1).value = job.created_at ? new Date(job.created_at) : null;
         row.getCell(1).numFmt = "mm/dd/yyyy";
         row.getCell(2).value = job.description || "—";
@@ -1589,6 +1730,21 @@ const renderJobExcel = async (report) => {
         row.getCell(2).value = job.created_at ? new Date(job.created_at) : null;
         row.getCell(2).numFmt = "mm/dd/yyyy";
         row.getCell(3).value = job.description || "";
+        row.getCell(4).value = job.category || "N/A";
+        row.getCell(5).value = job.customer_name || "N/A";
+        row.getCell(6).value = vehicleInfo;
+        row.getCell(7).value = job.job_status;
+        row.getCell(8).value = job.initial_amount || 0;
+        row.getCell(8).numFmt = '"$"#,##0.00';
+        row.getCell(9).value = job.advance_amount || 0;
+        row.getCell(9).numFmt = '"$"#,##0.00';
+        row.getCell(10).value = job.mileage ? `${Number(job.mileage).toLocaleString()} km` : "N/A";
+        row.getCell(11).value = job.technicians || "N/A";
+        row.getCell(12).value = job.notes || "";
+        row.getCell(13).value = job.invoice_no || "N/A";
+        row.getCell(14).value = job.final_total || 0;
+        row.getCell(14).numFmt = '"$"#,##0.00';
+        
         row.getCell(4).value = job.category || "";
         row.getCell(5).value = job.customer_name || "";
         row.getCell(6).value = job.plate || "";
@@ -1601,6 +1757,22 @@ const renderJobExcel = async (report) => {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
     });
+    
+    // Set column widths
+    detailsSheet.getColumn(1).width = 8;
+    detailsSheet.getColumn(2).width = 12;
+    detailsSheet.getColumn(3).width = 30;
+    detailsSheet.getColumn(4).width = 15;
+    detailsSheet.getColumn(5).width = 20;
+    detailsSheet.getColumn(6).width = 25;
+    detailsSheet.getColumn(7).width = 12;
+    detailsSheet.getColumn(8).width = 12;
+    detailsSheet.getColumn(9).width = 12;
+    detailsSheet.getColumn(10).width = 12;
+    detailsSheet.getColumn(11).width = 25;
+    detailsSheet.getColumn(12).width = 30;
+    detailsSheet.getColumn(13).width = 15;
+    detailsSheet.getColumn(14).width = 15;
 
     rawSheet.getColumn(1).width = 8;
     rawSheet.getColumn(2).width = 12;
@@ -1706,6 +1878,8 @@ const renderInventoryExcel = async (report) => {
     
     // Details Sheet (match Inventory PDF table: Item, Qty, Reorder, Used, Low)
     const detailsSheet = workbook.addWorksheet("Inventory Details");
+    
+    const detailHeaders = ["ID", "Name", "Type", "Quantity", "Unit", "Unit Cost", "Reorder Level", "Used", "Status", "Notes"];
     const pdfHeaders = ["Item", "Qty", "Reorder", "Used", "Low"];
     const headerRow = detailsSheet.getRow(1);
     pdfHeaders.forEach((header, idx) => {
@@ -1754,6 +1928,22 @@ const renderInventoryExcel = async (report) => {
     report.items.forEach((item, idx) => {
         const row = rawSheet.getRow(idx + 2);
         row.getCell(1).value = item.id;
+        row.getCell(2).value = item.name;
+        row.getCell(3).value = item.type || "N/A";
+        row.getCell(4).value = item.quantity;
+        row.getCell(5).value = item.unit || "N/A";
+        row.getCell(6).value = item.unit_cost || 0;
+        row.getCell(6).numFmt = '"$"#,##0.00';
+        row.getCell(7).value = item.reorder_level;
+        row.getCell(8).value = item.total_used;
+        row.getCell(9).value = item.quantity <= item.reorder_level ? "Low Stock" : "OK";
+        
+        if (item.quantity <= item.reorder_level) {
+            row.getCell(9).font = { color: { argb: "FFFF0000" }, bold: true };
+        }
+        
+        row.getCell(10).value = item.description || "";
+        
         row.getCell(2).value = item.name || "";
         row.getCell(3).value = item.type || "";
         row.getCell(4).value = item.quantity ?? 0;
@@ -1767,6 +1957,18 @@ const renderInventoryExcel = async (report) => {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
     });
+    
+    // Set column widths
+    detailsSheet.getColumn(1).width = 8;
+    detailsSheet.getColumn(2).width = 30;
+    detailsSheet.getColumn(3).width = 18;
+    detailsSheet.getColumn(4).width = 12;
+    detailsSheet.getColumn(5).width = 15;
+    detailsSheet.getColumn(6).width = 12;
+    detailsSheet.getColumn(7).width = 15;
+    detailsSheet.getColumn(8).width = 12;
+    detailsSheet.getColumn(9).width = 15;
+    detailsSheet.getColumn(10).width = 30;
 
     rawSheet.getColumn(1).width = 8;
     rawSheet.getColumn(2).width = 34;
