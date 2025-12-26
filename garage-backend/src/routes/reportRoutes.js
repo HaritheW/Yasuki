@@ -1943,10 +1943,8 @@ const renderInventoryExcel = async (report) => {
         "Unit",
         "Unit Cost",
         "Reorder",
-        "Used",
         "Low",
         "Notes",
-        "Last Stock In",
         "Created",
         "Updated",
     ];
@@ -1969,19 +1967,16 @@ const renderInventoryExcel = async (report) => {
             row.getCell(5).numFmt = '"LKR "#,##0.00';
         }
         row.getCell(6).value = item.reorder_level ?? 0;
-        row.getCell(7).value = item.total_used ?? 0;
-        row.getCell(8).value = item.low_stock ? "Yes" : "No";
-        statusChip(row.getCell(8), item.low_stock ? "unpaid" : "paid"); // red/green chip
-        row.getCell(9).value = item.description || "";
-        row.getCell(9).alignment = { wrapText: true, vertical: "top" };
-        row.getCell(10).value = item.last_purchase_date ? asExcelLocalDate(item.last_purchase_date) : null;
+        row.getCell(7).value = item.low_stock ? "Yes" : "No";
+        statusChip(row.getCell(7), item.low_stock ? "unpaid" : "paid"); // red/green chip
+        row.getCell(8).value = item.description || "";
+        row.getCell(8).alignment = { wrapText: true, vertical: "top" };
+        row.getCell(9).value = item.created_at ? asExcelLocalDate(item.created_at) : null;
+        row.getCell(9).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(10).value = item.updated_at ? asExcelLocalDate(item.updated_at) : null;
         row.getCell(10).numFmt = "dd/mm/yyyy h:mm AM/PM";
-        row.getCell(11).value = item.created_at ? asExcelLocalDate(item.created_at) : null;
-        row.getCell(11).numFmt = "dd/mm/yyyy h:mm AM/PM";
-        row.getCell(12).value = item.updated_at ? asExcelLocalDate(item.updated_at) : null;
-        row.getCell(12).numFmt = "dd/mm/yyyy h:mm AM/PM";
         if (item.low_stock) {
-            row.getCell(8).font = { color: { argb: "FFFF0000" }, bold: true };
+            row.getCell(7).font = { color: { argb: "FFFF0000" }, bold: true };
         }
         if (idx % 2 === 0) {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
@@ -1995,11 +1990,9 @@ const renderInventoryExcel = async (report) => {
     detailsSheet.getColumn(5).width = 14;
     detailsSheet.getColumn(6).width = 12;
     detailsSheet.getColumn(7).width = 10;
-    detailsSheet.getColumn(8).width = 10;
-    detailsSheet.getColumn(9).width = 30;
+    detailsSheet.getColumn(8).width = 30;
+    detailsSheet.getColumn(9).width = 18;
     detailsSheet.getColumn(10).width = 18;
-    detailsSheet.getColumn(11).width = 18;
-    detailsSheet.getColumn(12).width = 18;
 
     // Raw sheet (all fields)
     const rawSheet = workbook.addWorksheet("Inventory Raw");
@@ -2012,9 +2005,7 @@ const renderInventoryExcel = async (report) => {
         "Description",
         "Quantity",
         "Reorder Level",
-        "Used",
         "Low Stock",
-        "Last Stock In",
         "Created At",
         "Updated At",
     ];
@@ -2038,17 +2029,14 @@ const renderInventoryExcel = async (report) => {
         row.getCell(6).value = item.description || "";
         row.getCell(7).value = item.quantity ?? 0;
         row.getCell(8).value = item.reorder_level ?? 0;
-        row.getCell(9).value = item.total_used ?? 0;
-        row.getCell(10).value = item.low_stock ? "Yes" : "No";
-        statusChip(row.getCell(10), item.low_stock ? "unpaid" : "paid");
-        row.getCell(11).value = item.last_purchase_date ? asExcelLocalDate(item.last_purchase_date) : null;
+        row.getCell(9).value = item.low_stock ? "Yes" : "No";
+        statusChip(row.getCell(9), item.low_stock ? "unpaid" : "paid");
+        row.getCell(10).value = item.created_at ? asExcelLocalDate(item.created_at) : null;
+        row.getCell(10).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(11).value = item.updated_at ? asExcelLocalDate(item.updated_at) : null;
         row.getCell(11).numFmt = "dd/mm/yyyy h:mm AM/PM";
-        row.getCell(12).value = item.created_at ? asExcelLocalDate(item.created_at) : null;
-        row.getCell(12).numFmt = "dd/mm/yyyy h:mm AM/PM";
-        row.getCell(13).value = item.updated_at ? asExcelLocalDate(item.updated_at) : null;
-        row.getCell(13).numFmt = "dd/mm/yyyy h:mm AM/PM";
         if (item.low_stock) {
-            row.getCell(10).font = { color: { argb: "FFFF0000" }, bold: true };
+            row.getCell(9).font = { color: { argb: "FFFF0000" }, bold: true };
         }
         if (idx % 2 === 0) {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
@@ -2064,10 +2052,8 @@ const renderInventoryExcel = async (report) => {
     rawSheet.getColumn(7).width = 12;
     rawSheet.getColumn(8).width = 14;
     rawSheet.getColumn(9).width = 12;
-    rawSheet.getColumn(10).width = 12;
+    rawSheet.getColumn(10).width = 18;
     rawSheet.getColumn(11).width = 18;
-    rawSheet.getColumn(12).width = 18;
-    rawSheet.getColumn(13).width = 18;
     
     // Add borders
     [summarySheet, detailsSheet, rawSheet].forEach(applyTableBorders);
