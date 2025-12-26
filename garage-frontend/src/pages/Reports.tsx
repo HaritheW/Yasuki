@@ -70,7 +70,21 @@ type InventoryReport = {
 
 type RevenueReport = {
   range: { startDate: string; endDate: string; label?: string };
-  totals: { invoicesTotal: number; expensesTotal: number; revenue: number };
+  totals: {
+    baseRevenue: number;
+    advances: number;
+    totalRevenue: number;
+    invoicesTotal: number;
+    invoiceCount: number;
+    averageInvoice: number;
+    paidRevenue: number;
+    partialRevenue: number;
+    unpaidRevenue: number;
+    expensesTotal: number;
+    netProfit: number;
+    revenue: number; // Alias for backward compatibility
+  };
+  statuses: Array<{ status: string; count: number; total: number }>;
   invoices: {
     id: number;
     invoice_no: string;
@@ -167,6 +181,7 @@ const Reports = () => {
         break;
       }
       case "monthly": {
+        // Set to current month (full month range)
         setDateRange({ from: startOfMonth(now), to: endOfMonth(now) });
         break;
       }
@@ -191,12 +206,31 @@ const Reports = () => {
   const activeRange = useMemo(() => {
     switch (timeframe) {
       case "daily":
-        return { from: singleDate, to: singleDate };
+        return { from: startOfDay(singleDate), to: startOfDay(singleDate) };
       case "monthly":
+        if (dateRange?.from && dateRange?.to) {
+          // Ensure full months: start of first month to end of last month
+          const fromMonth = startOfMonth(dateRange.from);
+          const toMonth = endOfMonth(dateRange.to);
+          return { from: fromMonth, to: toMonth };
+        }
+        return dateRange;
       case "custom":
+        if (dateRange?.from && dateRange?.to) {
+          // Ensure start of day for from, end of day for to
+          return {
+            from: startOfDay(dateRange.from),
+            to: startOfDay(dateRange.to),
+          };
+        }
         return dateRange;
       case "yearly":
-        return { from: new Date(singleDate.getFullYear(), 0, 1), to: new Date(singleDate.getFullYear(), 11, 31) };
+        // Full year: January 1 to December 31
+        const year = singleDate.getFullYear();
+        return {
+          from: startOfDay(new Date(year, 0, 1)),
+          to: startOfDay(new Date(year, 11, 31)),
+        };
       default:
         return undefined;
     }
@@ -218,14 +252,22 @@ const Reports = () => {
     }
     if (timeframe === "monthly") {
       const fromMonth = activeRange.from ? startOfMonth(activeRange.from) : null;
-      const toMonth = activeRange.to ? startOfMonth(activeRange.to) : fromMonth;
-      return `${formatMonthYear(fromMonth)} - ${formatMonthYear(toMonth)}`;
+      const toMonth = activeRange.to ? endOfMonth(activeRange.to) : fromMonth;
+      if (fromMonth && toMonth) {
+        const fromMonthYear = formatMonthYear(fromMonth);
+        const toMonthYear = formatMonthYear(toMonth);
+        if (fromMonthYear === toMonthYear) {
+          return fromMonthYear;
+        }
+        return `${fromMonthYear} - ${toMonthYear}`;
+      }
+      return `${fromLabel} - ${toLabel}`;
     }
     if (timeframe === "yearly") {
       return `Year ${singleDate.getFullYear()}`;
     }
     return `${fromLabel} - ${toLabel}`;
-  }, [activeRange, timeframe]);
+  }, [activeRange, timeframe, singleDate]);
 
   const monthlyStart = useMemo(() => {
     if (timeframe !== "monthly") return null;
@@ -243,6 +285,14 @@ const Reports = () => {
   const buildParams = () => {
     const params = new URLSearchParams();
     params.set("timeframe", timeframe);
+    
+    // Always send explicit startDate and endDate for accurate date range queries
+    if (activeStartDate && activeEndDate) {
+      params.set("startDate", activeStartDate);
+      params.set("endDate", activeEndDate);
+    }
+    
+    // Also send timeframe-specific params for backend compatibility
     if (timeframe === "daily" && activeStartDate) {
       params.set("date", activeStartDate);
     } else if (timeframe === "monthly" && activeStartDate) {
@@ -252,15 +302,8 @@ const Reports = () => {
     } else if (timeframe === "yearly" && activeStartDate) {
       const year = new Date(activeStartDate).getFullYear();
       params.set("year", String(year));
-    } else if (activeStartDate && activeEndDate) {
-      params.set("startDate", activeStartDate);
-      params.set("endDate", activeEndDate);
     }
-    if (activeStartDate && activeEndDate) {
-      // Always send explicit boundaries so the backend can honor the chosen window.
-      params.set("startDate", activeStartDate);
-      params.set("endDate", activeEndDate);
-    }
+    
     return params;
   };
 
@@ -490,14 +533,16 @@ const Reports = () => {
 
     if (kind === "start") {
       const currentEnd = monthlyEnd ?? option.start;
+      // Ensure we use full months: start of selected month to end of current end month
       const adjustedEnd =
         currentEnd < option.start ? endOfMonth(option.start) : endOfMonth(currentEnd);
-      setDateRange({ from: option.start, to: adjustedEnd });
+      setDateRange({ from: startOfMonth(option.start), to: adjustedEnd });
     } else {
       const currentStart = monthlyStart ?? option.start;
+      // Ensure we use full months: start of current start month to end of selected month
       const adjustedStart =
-        currentStart > option.start ? option.start : currentStart;
-      setDateRange({ from: adjustedStart, to: option.end });
+        currentStart > option.start ? startOfMonth(option.start) : startOfMonth(currentStart);
+      setDateRange({ from: adjustedStart, to: endOfMonth(option.end) });
     }
   };
 
@@ -1107,64 +1152,156 @@ const Reports = () => {
         </>
       ) : reportType === "revenue" ? (
         <>
-          <div className="grid gap-4 md:grid-cols-3">
+          {/* Profit Summary Cards */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <Card className="bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
+              <CardHeader>
+                <CardTitle className="text-base">Net Profit</CardTitle>
+                <CardDescription>Total Revenue - Total Expenses</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-primary">
+                  {revenueReport ? `LKR ${revenueReport.totals.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                </p>
+                {revenueReport && revenueReport.totals.totalRevenue > 0 && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Margin: {((revenueReport.totals.netProfit / revenueReport.totals.totalRevenue) * 100).toFixed(1)}%
+                  </p>
+                )}
+              </CardContent>
+            </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Revenue Summary</CardTitle>
-                <CardDescription>
-                  {isLoadingRevenue ? "Loading..." : `Net revenue for selected period`}
-                </CardDescription>
+                <CardTitle className="text-base">Total Revenue</CardTitle>
+                <CardDescription>Including advances</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-3xl font-bold">
-                  {revenueReport ? `LKR ${revenueReport.totals.revenue.toLocaleString()}` : "—"}
+              <CardContent>
+                <p className="text-3xl font-bold text-success">
+                  {revenueReport ? `LKR ${revenueReport.totals.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                 </p>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Invoices Total:</span>
-                    <span className="font-medium">
-                      {revenueReport ? `LKR ${revenueReport.totals.invoicesTotal.toLocaleString()}` : "—"}
+                {revenueReport && revenueReport.totals.advances > 0 && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Includes LKR {revenueReport.totals.advances.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} in advances
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Total Expenses</CardTitle>
+                <CardDescription>All expenses for period</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-destructive">
+                  {revenueReport ? `LKR ${revenueReport.totals.expensesTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  {revenueReport ? `${revenueReport.expenses.length} expense${revenueReport.expenses.length === 1 ? "" : "s"}` : "—"}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Invoices</CardTitle>
+                <CardDescription>Total invoices issued</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold">
+                  {revenueReport ? revenueReport.totals.invoiceCount : "—"}
+                </p>
+                {revenueReport && revenueReport.totals.invoiceCount > 0 && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Avg: LKR {revenueReport.totals.averageInvoice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Detailed Breakdown */}
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Revenue Breakdown</CardTitle>
+                <CardDescription>Detailed revenue analysis</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center py-2 border-b">
+                    <span className="text-sm text-muted-foreground">Base Revenue (Invoices):</span>
+                    <span className="font-semibold">
+                      {revenueReport ? `LKR ${revenueReport.totals.baseRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Expenses Total:</span>
-                    <span className="font-medium">
-                      {revenueReport ? `LKR ${revenueReport.totals.expensesTotal.toLocaleString()}` : "—"}
+                  {revenueReport && revenueReport.totals.advances > 0 && (
+                    <div className="flex justify-between items-center py-2 border-b">
+                      <span className="text-sm text-muted-foreground">Advances Received:</span>
+                      <span className="font-semibold text-success">
+                        + LKR {revenueReport.totals.advances.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center py-2 border-b-2 border-primary/20">
+                    <span className="text-sm font-medium">Total Revenue:</span>
+                    <span className="text-lg font-bold text-success">
+                      {revenueReport ? `LKR ${revenueReport.totals.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                     </span>
                   </div>
+                </div>
+                <div className="pt-3 border-t space-y-2">
+                  <p className="text-sm font-medium text-muted-foreground mb-2">Payment Status:</p>
+                  {revenueReport?.statuses.map((status) => (
+                    <div key={status.status} className="flex justify-between items-center text-sm">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-xs">
+                          {status.status.toUpperCase()}
+                        </Badge>
+                        <span className="text-muted-foreground">({status.count})</span>
+                      </div>
+                      <span className="font-medium">
+                        LKR {status.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </CardContent>
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Invoices</CardTitle>
-                <CardDescription>
-                  {isLoadingRevenue ? "Loading..." : `${revenueReport?.invoices.length || 0} invoice${(revenueReport?.invoices.length || 0) === 1 ? "" : "s"}`}
-                </CardDescription>
+                <CardTitle>Profit Calculation</CardTitle>
+                <CardDescription>How net profit is calculated</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-3xl font-bold">
-                  {revenueReport ? revenueReport.invoices.length : "—"}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Total: {revenueReport ? `LKR ${revenueReport.totals.invoicesTotal.toLocaleString()}` : "—"}
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>Expenses</CardTitle>
-                <CardDescription>
-                  {isLoadingRevenue ? "Loading..." : `${revenueReport?.expenses.length || 0} expense${(revenueReport?.expenses.length || 0) === 1 ? "" : "s"}`}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-3xl font-bold">
-                  {revenueReport ? revenueReport.expenses.length : "—"}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Total: {revenueReport ? `LKR ${revenueReport.totals.expensesTotal.toLocaleString()}` : "—"}
-                </p>
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center py-2 border-b">
+                    <span className="text-sm text-muted-foreground">Total Revenue:</span>
+                    <span className="font-semibold text-success">
+                      {revenueReport ? `LKR ${revenueReport.totals.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b">
+                    <span className="text-sm text-muted-foreground">Total Expenses:</span>
+                    <span className="font-semibold text-destructive">
+                      - {revenueReport ? `LKR ${revenueReport.totals.expensesTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-3 border-t-2 border-primary/20 bg-muted/30 rounded-md px-3">
+                    <span className="text-base font-semibold">Net Profit:</span>
+                    <span className={`text-xl font-bold ${revenueReport && revenueReport.totals.netProfit >= 0 ? "text-success" : "text-destructive"}`}>
+                      {revenueReport ? `LKR ${revenueReport.totals.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                    </span>
+                  </div>
+                </div>
+                {revenueReport && revenueReport.totals.totalRevenue > 0 && (
+                  <div className="pt-3 border-t">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground">Profit Margin:</span>
+                      <span className={`font-semibold ${((revenueReport.totals.netProfit / revenueReport.totals.totalRevenue) * 100) >= 0 ? "text-success" : "text-destructive"}`}>
+                        {((revenueReport.totals.netProfit / revenueReport.totals.totalRevenue) * 100).toFixed(2)}%
+                      </span>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

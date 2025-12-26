@@ -33,6 +33,42 @@ const deriveDateRange = (query = {}) => {
     const today = new Date();
     const timeframe = (query.timeframe || "monthly").toLowerCase();
 
+    // If explicit startDate and endDate are provided, use them (most accurate)
+    const explicitStart = normalizeDateString(query.startDate || query.from);
+    const explicitEnd = normalizeDateString(query.endDate || query.to);
+    
+    if (explicitStart && explicitEnd) {
+        let label = `Custom ${explicitStart} → ${explicitEnd}`;
+        
+        // Generate appropriate label based on timeframe
+        if (timeframe === "daily") {
+            label = `Daily • ${explicitStart}`;
+        } else if (timeframe === "monthly") {
+            const startDate = new Date(explicitStart);
+            const endDate = new Date(explicitEnd);
+            const startMonth = startDate.getMonth() + 1;
+            const startYear = startDate.getFullYear();
+            const endMonth = endDate.getMonth() + 1;
+            const endYear = endDate.getFullYear();
+            
+            if (startMonth === endMonth && startYear === endYear) {
+                label = `Month ${pad2(startMonth)}/${startYear}`;
+            } else {
+                label = `${pad2(startMonth)}/${startYear} → ${pad2(endMonth)}/${endYear}`;
+            }
+        } else if (timeframe === "yearly") {
+            const year = new Date(explicitStart).getFullYear();
+            label = `Year ${year}`;
+        }
+        
+        return {
+            startDate: explicitStart,
+            endDate: explicitEnd,
+            label,
+        };
+    }
+
+    // Fallback to timeframe-specific logic if explicit dates not provided
     if (timeframe === "daily") {
         const date = normalizeDateString(query.date) || today.toISOString().slice(0, 10);
         return {
@@ -52,16 +88,14 @@ const deriveDateRange = (query = {}) => {
     }
 
     if (timeframe === "custom") {
-        const start = normalizeDateString(query.startDate || query.from);
-        const end = normalizeDateString(query.endDate || query.to);
         const fallbackEnd = today.toISOString().slice(0, 10);
         const fallbackStart = new Date(today);
         fallbackStart.setDate(fallbackStart.getDate() - 29);
 
         return {
-            startDate: start || fallbackStart.toISOString().slice(0, 10),
-            endDate: end || fallbackEnd,
-            label: `Custom ${start || "N/A"} → ${end || "N/A"}`,
+            startDate: explicitStart || fallbackStart.toISOString().slice(0, 10),
+            endDate: explicitEnd || fallbackEnd,
+            label: `Custom ${explicitStart || "N/A"} → ${explicitEnd || "N/A"}`,
         };
     }
 
@@ -261,17 +295,30 @@ const fetchJobReport = async (range) => {
 };
 
 const fetchRevenueReport = async (range) => {
-    // Get invoice summary with payment status breakdown
+    // Get base revenue (final_total) - this already has advances deducted
     const summary = await getAsync(
         `
         SELECT
-            COALESCE(SUM(final_total), 0) AS totalRevenue,
+            COALESCE(SUM(final_total), 0) AS baseRevenue,
             COUNT(*) AS invoiceCount,
             COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN final_total ELSE 0 END), 0) AS paidRevenue,
             COALESCE(SUM(CASE WHEN payment_status = 'partial' THEN final_total ELSE 0 END), 0) AS partialRevenue,
             COALESCE(SUM(CASE WHEN payment_status = 'unpaid' THEN final_total ELSE 0 END), 0) AS unpaidRevenue
         FROM Invoices
         WHERE DATE(invoice_date) BETWEEN DATE(?) AND DATE(?)
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    // Get total advances for invoices in the date range
+    const advancesRow = await getAsync(
+        `
+        SELECT COALESCE(SUM(InvoiceExtraItems.amount), 0) AS advances
+        FROM InvoiceExtraItems
+        INNER JOIN Invoices ON InvoiceExtraItems.invoice_id = Invoices.id
+        WHERE InvoiceExtraItems.type = 'deduction' 
+        AND LOWER(InvoiceExtraItems.label) = 'advance'
+        AND DATE(Invoices.invoice_date) BETWEEN DATE(?) AND DATE(?)
     `,
         [range.startDate, range.endDate]
     );
@@ -329,17 +376,22 @@ const fetchRevenueReport = async (range) => {
         [range.startDate, range.endDate]
     );
 
-    const totalRevenue = Number(summary?.totalRevenue || 0);
+    const baseRevenue = Number(summary?.baseRevenue || 0);
+    const advances = Number(advancesRow?.advances || 0);
+    const totalRevenue = baseRevenue + advances; // Total Revenue including advances (matching dashboard)
     const invoiceCount = Number(summary?.invoiceCount || 0);
     const paidRevenue = Number(summary?.paidRevenue || 0);
     const partialRevenue = Number(summary?.partialRevenue || 0);
     const unpaidRevenue = Number(summary?.unpaidRevenue || 0);
     const expensesTotalAmount = Number((expensesTotal?.total || 0).toFixed(2));
-    const netRevenue = Number((totalRevenue - expensesTotalAmount).toFixed(2));
+    // Net Profit = Total Revenue (including advances) - All Expenses (matching dashboard)
+    const netProfit = Number((totalRevenue - expensesTotalAmount).toFixed(2));
 
     return {
         range,
         totals: {
+            baseRevenue: Number(baseRevenue.toFixed(2)),
+            advances: Number(advances.toFixed(2)),
             totalRevenue: Number(totalRevenue.toFixed(2)),
             invoicesTotal: Number(totalRevenue.toFixed(2)), // Alias for backward compatibility
             invoiceCount,
@@ -348,7 +400,8 @@ const fetchRevenueReport = async (range) => {
             partialRevenue: Number(partialRevenue.toFixed(2)),
             unpaidRevenue: Number(unpaidRevenue.toFixed(2)),
             expensesTotal: expensesTotalAmount,
-            revenue: netRevenue,
+            netProfit: netProfit,
+            revenue: netProfit, // Alias for backward compatibility
         },
         statuses,
         invoices,
@@ -1916,7 +1969,7 @@ router.get("/revenue/pdf", async (req, res) => {
         res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
         res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", `attachment; filename=revenue-report-${range.startDate}-to-${range.endDate}.pdf`);
+        res.setHeader("Content-Disposition", `attachment; filename=profit-report-${range.startDate}-to-${range.endDate}.pdf`);
         res.setHeader("Content-Length", buffer.length);
         
         res.status(200).send(buffer);
@@ -2093,15 +2146,24 @@ const renderRevenuePdf = (report) =>
             doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(size).fillColor(color);
         };
 
-        // Header band
         const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        
+        // Get values from report
+        const netProfit = report.totals.netProfit ?? report.totals.revenue ?? 0;
+        const totalRevenue = report.totals.totalRevenue ?? report.totals.invoicesTotal ?? 0;
+        const baseRevenue = report.totals.baseRevenue ?? report.totals.invoicesTotal ?? 0;
+        const advances = report.totals.advances ?? 0;
+        const expensesTotal = report.totals.expensesTotal ?? 0;
+        const profitMargin = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100).toFixed(2) : "0.00";
+
+        // Header band with gradient effect
         doc.save();
-        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 58).fill("#0f172a");
+        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 70).fill("#0f172a");
         doc.restore();
         doc.moveDown(0.2);
-        setFont({ size: 22, bold: true, color: "#ffffff" });
-        doc.text("Revenue Report", doc.page.margins.left + 8, doc.page.margins.top + 12);
-        setFont({ size: 10, color: "#e2e8f0" });
+        setFont({ size: 24, bold: true, color: "#ffffff" });
+        doc.text("Profit Report", doc.page.margins.left + 8, doc.page.margins.top + 15);
+        setFont({ size: 11, color: "#e2e8f0" });
         doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}`, {
             align: "left",
             lineGap: 2,
@@ -2111,54 +2173,197 @@ const renderRevenuePdf = (report) =>
                 year: "numeric",
                 month: "short",
                 day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
             })}`
         );
-        doc.moveDown(2);
+        doc.moveDown(2.5);
 
-        // Summary band
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
+        // Net Profit - Prominent card (larger)
+        const netProfitCardWidth = pageWidth;
+        const netProfitCardHeight = 90;
+        const netProfitY = doc.y;
+        const profitColor = netProfit >= 0 ? "#10b981" : "#ef4444";
+        doc.save();
+        doc.roundedRect(doc.page.margins.left, netProfitY, netProfitCardWidth, netProfitCardHeight, 10)
+            .fill(netProfit >= 0 ? "#ecfdf5" : "#fef2f2");
+        doc.restore();
+        setFont({ size: 11, color: "#6b7280" });
+        doc.text("NET PROFIT", doc.page.margins.left + 16, netProfitY + 12);
+        setFont({ size: 28, bold: true, color: profitColor });
+        doc.text(formatCurrency(netProfit), doc.page.margins.left + 16, netProfitY + 30);
+        setFont({ size: 10, color: "#6b7280" });
+        doc.text(`Profit Margin: ${profitMargin}% • Total Revenue - Total Expenses`, doc.page.margins.left + 16, netProfitY + 65);
+        doc.moveDown(6);
+
+        // Summary cards row
+        const cardWidth = (pageWidth - 16) / 4;
+        const cardHeight = 80;
         const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
+        
+        const drawCard = (x, title, value, caption, color = "#111827") => {
             doc.save();
             doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
             doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
             setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
+            doc.text(title, x + 10, startY + 8, { width: cardWidth - 20 });
+            setFont({ size: 14, bold: true, color: color });
+            doc.text(value, x + 10, startY + 24, { width: cardWidth - 20 });
+            setFont({ size: 8, color: "#6b7280" });
+            doc.text(caption, x + 10, startY + 45, { width: cardWidth - 20 });
         };
 
         drawCard(
             doc.page.margins.left,
-            "Net Revenue",
-            formatCurrency(report.totals.revenue),
-            `Invoices - Expenses`
+            "Total Revenue",
+            formatCurrency(totalRevenue),
+            `Including advances`,
+            "#10b981"
         );
 
         drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Invoices Total",
-            formatCurrency(report.totals.invoicesTotal),
-            `${report.invoices.length} invoice${report.invoices.length === 1 ? "" : "s"}`
+            doc.page.margins.left + cardWidth + 4,
+            "Base Revenue",
+            formatCurrency(baseRevenue),
+            `From invoices`,
+            "#111827"
         );
 
         drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Expenses Total",
-            formatCurrency(report.totals.expensesTotal),
-            `${report.expenses.length} expense${report.expenses.length === 1 ? "" : "s"}`
+            doc.page.margins.left + (cardWidth + 4) * 2,
+            "Advances",
+            formatCurrency(advances),
+            advances > 0 ? `Received` : `None`,
+            "#059669"
         );
 
-        doc.moveDown(6);
+        drawCard(
+            doc.page.margins.left + (cardWidth + 4) * 3,
+            "Total Expenses",
+            formatCurrency(expensesTotal),
+            `${report.expenses.length} expense${report.expenses.length === 1 ? "" : "s"}`,
+            "#ef4444"
+        );
 
+        doc.moveDown(6.5);
+
+        // Revenue Breakdown Section
         const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
+            setFont({ size: 13, bold: true, color: "#0f172a" });
             doc.text(label, { continued: false });
-            doc.moveDown(0.4);
+            doc.moveDown(0.5);
         };
+
+        // Revenue Breakdown
+        sectionTitle("Revenue Breakdown");
+        const breakdownY = doc.y;
+        const breakdownWidth = pageWidth;
+        const breakdownHeight = 120;
+        doc.save();
+        doc.roundedRect(doc.page.margins.left, breakdownY, breakdownWidth, breakdownHeight, 8)
+            .fill("#f8fafc");
+        doc.restore();
+        
+        const breakdownStartX = doc.page.margins.left + 12;
+        let breakdownCurrentY = breakdownY + 12;
+        
+        setFont({ size: 10, color: "#475569" });
+        doc.text("Base Revenue (Invoices):", breakdownStartX, breakdownCurrentY);
+        setFont({ size: 11, bold: true, color: "#111827" });
+        doc.text(formatCurrency(baseRevenue), breakdownStartX + 180, breakdownCurrentY);
+        
+        breakdownCurrentY += 20;
+        if (advances > 0) {
+            setFont({ size: 10, color: "#475569" });
+            doc.text("Advances Received:", breakdownStartX, breakdownCurrentY);
+            setFont({ size: 11, bold: true, color: "#059669" });
+            doc.text(`+ ${formatCurrency(advances)}`, breakdownStartX + 180, breakdownCurrentY);
+            breakdownCurrentY += 20;
+        }
+        
+        doc.strokeColor("#cbd5e1")
+            .moveTo(breakdownStartX, breakdownCurrentY)
+            .lineTo(breakdownStartX + breakdownWidth - 24, breakdownCurrentY)
+            .stroke();
+        breakdownCurrentY += 15;
+        
+        setFont({ size: 11, bold: true, color: "#0f172a" });
+        doc.text("Total Revenue:", breakdownStartX, breakdownCurrentY);
+        setFont({ size: 14, bold: true, color: "#10b981" });
+        doc.text(formatCurrency(totalRevenue), breakdownStartX + 180, breakdownCurrentY);
+        
+        breakdownCurrentY += 25;
+        setFont({ size: 9, color: "#64748b" });
+        doc.text("Payment Status Breakdown:", breakdownStartX, breakdownCurrentY);
+        breakdownCurrentY += 15;
+        
+        if (report.statuses && report.statuses.length > 0) {
+            report.statuses.forEach((status, idx) => {
+                const statusX = breakdownStartX + (idx % 3) * 180;
+                const statusY = breakdownCurrentY + Math.floor(idx / 3) * 18;
+                setFont({ size: 9, color: "#475569" });
+                doc.text(`${(status.status || "unknown").toUpperCase()}:`, statusX, statusY);
+                setFont({ size: 9, bold: true, color: "#111827" });
+                doc.text(
+                    `${status.count} • ${formatCurrency(status.total)}`,
+                    statusX + 70,
+                    statusY
+                );
+            });
+        } else {
+            setFont({ size: 9, color: "#94a3b8" });
+            doc.text("No payment status data available", breakdownStartX, breakdownCurrentY);
+        }
+        
+        doc.y = breakdownY + breakdownHeight + 20;
+
+        // Profit Calculation Section
+        sectionTitle("Profit Calculation");
+        const calcY = doc.y;
+        const calcWidth = pageWidth;
+        const calcHeight = 100;
+        doc.save();
+        doc.roundedRect(doc.page.margins.left, calcY, calcWidth, calcHeight, 8)
+            .fill("#fef3c7");
+        doc.restore();
+        
+        const calcStartX = doc.page.margins.left + 12;
+        let calcCurrentY = calcY + 12;
+        
+        setFont({ size: 10, color: "#92400e" });
+        doc.text("Total Revenue:", calcStartX, calcCurrentY);
+        setFont({ size: 11, bold: true, color: "#10b981" });
+        doc.text(formatCurrency(totalRevenue), calcStartX + 180, calcCurrentY);
+        
+        calcCurrentY += 20;
+        setFont({ size: 10, color: "#92400e" });
+        doc.text("Total Expenses:", calcStartX, calcCurrentY);
+        setFont({ size: 11, bold: true, color: "#ef4444" });
+        doc.text(`- ${formatCurrency(expensesTotal)}`, calcStartX + 180, calcCurrentY);
+        
+        calcCurrentY += 20;
+        doc.strokeColor("#fbbf24")
+            .lineWidth(2)
+            .moveTo(calcStartX, calcCurrentY)
+            .lineTo(calcStartX + calcWidth - 24, calcCurrentY)
+            .stroke();
+        calcCurrentY += 15;
+        
+        setFont({ size: 12, bold: true, color: "#92400e" });
+        doc.text("Net Profit:", calcStartX, calcCurrentY);
+        setFont({ size: 16, bold: true, color: profitColor });
+        doc.text(formatCurrency(netProfit), calcStartX + 180, calcCurrentY);
+        
+        calcCurrentY += 20;
+        setFont({ size: 9, color: "#92400e" });
+        doc.text(`Profit Margin: ${profitMargin}%`, calcStartX, calcCurrentY);
+        
+        doc.y = calcY + calcHeight + 20;
+
+        // Check if we need a new page
+        if (doc.y > doc.page.height - doc.page.margins.bottom - 200) {
+            doc.addPage();
+        }
 
         // Invoices table
         sectionTitle("Invoices");
@@ -2259,6 +2464,62 @@ const renderRevenuePdf = (report) =>
                 doc.text(`+ ${report.expenses.length - maxExpenseRows} more expenses not shown`, startX, doc.y);
             }
         }
+
+        // Final Summary Footer
+        if (doc.y > doc.page.height - doc.page.margins.bottom - 120) {
+            doc.addPage();
+        }
+        doc.moveDown(2);
+        
+        const footerY = doc.y;
+        const footerHeight = 100;
+        doc.save();
+        doc.roundedRect(doc.page.margins.left, footerY, pageWidth, footerHeight, 8)
+            .fill("#0f172a");
+        doc.restore();
+        
+        const footerStartX = doc.page.margins.left + 16;
+        let footerCurrentY = footerY + 16;
+        
+        setFont({ size: 14, bold: true, color: "#ffffff" });
+        doc.text("Report Summary", footerStartX, footerCurrentY);
+        footerCurrentY += 25;
+        
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text("Net Profit:", footerStartX, footerCurrentY);
+        setFont({ size: 12, bold: true, color: profitColor });
+        doc.text(formatCurrency(netProfit), footerStartX + 120, footerCurrentY);
+        
+        footerCurrentY += 18;
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text("Total Revenue:", footerStartX, footerCurrentY);
+        setFont({ size: 11, bold: true, color: "#10b981" });
+        doc.text(formatCurrency(totalRevenue), footerStartX + 120, footerCurrentY);
+        
+        footerCurrentY += 18;
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text("Total Expenses:", footerStartX, footerCurrentY);
+        setFont({ size: 11, bold: true, color: "#ef4444" });
+        doc.text(formatCurrency(expensesTotal), footerStartX + 120, footerCurrentY);
+        
+        const footerRightX = doc.page.margins.left + pageWidth / 2 + 20;
+        footerCurrentY = footerY + 16;
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text("Profit Margin:", footerRightX, footerCurrentY);
+        setFont({ size: 12, bold: true, color: profitColor });
+        doc.text(`${profitMargin}%`, footerRightX + 100, footerCurrentY);
+        
+        footerCurrentY += 18;
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text("Total Invoices:", footerRightX, footerCurrentY);
+        setFont({ size: 11, bold: true, color: "#ffffff" });
+        doc.text(`${report.totals.invoiceCount || report.invoices.length}`, footerRightX + 100, footerCurrentY);
+        
+        footerCurrentY += 18;
+        setFont({ size: 10, color: "#e2e8f0" });
+        doc.text("Total Expenses Count:", footerRightX, footerCurrentY);
+        setFont({ size: 11, bold: true, color: "#ffffff" });
+        doc.text(`${report.expenses.length}`, footerRightX + 100, footerCurrentY);
 
         doc.end();
     });
