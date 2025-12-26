@@ -46,7 +46,15 @@ type JobReport = {
     created_at: string;
     category: string | null;
     customer_name: string | null;
+    vehicle_make: string | null;
+    vehicle_model: string | null;
+    vehicle_year: string | null;
     plate: string | null;
+    initial_amount: number | null;
+    advance_amount: number | null;
+    mileage: number | null;
+    technicians: string | null;
+    notes: string | null;
     invoice_no: string | null;
     final_total: number | null;
   }[];
@@ -63,6 +71,9 @@ type InventoryReport = {
     type: string;
     quantity: number;
     reorder_level: number;
+    unit_cost: number | null;
+    unit: string | null;
+    description: string | null;
     total_used: number;
     low_stock: number;
   }[];
@@ -818,6 +829,8 @@ const Reports = () => {
                         <th className="py-2 pr-3">Category</th>
                         <th className="py-2 pr-3 text-right">Amount (LKR)</th>
                         <th className="py-2 pr-3">Status</th>
+                        <th className="py-2 pr-3">Payment Method</th>
+                        <th className="py-2 pr-3">Remarks</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -837,6 +850,12 @@ const Reports = () => {
                             <Badge variant="outline">
                               {(expense.payment_status || "pending").toUpperCase()}
                             </Badge>
+                          </td>
+                          <td className="py-2 pr-3">
+                            {expense.payment_method || <span className="text-muted-foreground">—</span>}
+                          </td>
+                          <td className="py-2 pr-3">
+                            {expense.remarks || <span className="text-muted-foreground">—</span>}
                           </td>
                         </tr>
                       ))}
@@ -910,29 +929,60 @@ const Reports = () => {
                       <tr>
                         <th className="py-2 pr-3">Date</th>
                         <th className="py-2 pr-3">Description</th>
+                        <th className="py-2 pr-3">Category</th>
                         <th className="py-2 pr-3">Customer</th>
+                        <th className="py-2 pr-3">Vehicle</th>
                         <th className="py-2 pr-3">Status</th>
+                        <th className="py-2 pr-3 text-right">Estimate</th>
+                        <th className="py-2 pr-3 text-right">Advance</th>
+                        <th className="py-2 pr-3">Mileage</th>
+                        <th className="py-2 pr-3">Technicians</th>
+                        <th className="py-2 pr-3">Notes</th>
                         <th className="py-2 pr-3">Invoice</th>
                         <th className="py-2 pr-3 text-right">Amount (LKR)</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {jobReport.jobs.slice(0, 50).map((job) => (
-                        <tr key={job.id} className="border-top border-border/60">
-                          <td className="py-2 pr-3">{formatDisplayDate(new Date(job.created_at))}</td>
-                          <td className="py-2 pr-3">{job.description || "—"}</td>
-                          <td className="py-2 pr-3">{job.customer_name || "Walk-in"}</td>
-                          <td className="py-2 pr-3">
-                            <Badge variant="outline">{job.job_status}</Badge>
-                          </td>
-                          <td className="py-2 pr-3">{job.invoice_no || "—"}</td>
-                          <td className="py-2 pr-3 text-right">
-                            {job.final_total
-                              ? job.final_total.toLocaleString(undefined, { minimumFractionDigits: 2 })
-                              : "—"}
-                          </td>
-                        </tr>
-                      ))}
+                      {jobReport.jobs.slice(0, 50).map((job) => {
+                        const vehicleInfo = [job.vehicle_make, job.vehicle_model, job.vehicle_year].filter(Boolean).join(" ") || job.plate || "—";
+                        return (
+                          <tr key={job.id} className="border-top border-border/60">
+                            <td className="py-2 pr-3">{formatDisplayDate(new Date(job.created_at))}</td>
+                            <td className="py-2 pr-3">{job.description || "—"}</td>
+                            <td className="py-2 pr-3">{job.category || <span className="text-muted-foreground">—</span>}</td>
+                            <td className="py-2 pr-3">{job.customer_name || "Walk-in"}</td>
+                            <td className="py-2 pr-3">{vehicleInfo}</td>
+                            <td className="py-2 pr-3">
+                              <Badge variant="outline">{job.job_status}</Badge>
+                            </td>
+                            <td className="py-2 pr-3 text-right">
+                              {job.initial_amount
+                                ? job.initial_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                : "—"}
+                            </td>
+                            <td className="py-2 pr-3 text-right">
+                              {job.advance_amount
+                                ? job.advance_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                : "—"}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {job.mileage
+                                ? `${job.mileage.toLocaleString(undefined, { maximumFractionDigits: 2 })} km`
+                                : "—"}
+                            </td>
+                            <td className="py-2 pr-3">{job.technicians || <span className="text-muted-foreground">—</span>}</td>
+                            <td className="py-2 pr-3 max-w-[200px] truncate" title={job.notes || "—"}>
+                              {job.notes || <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="py-2 pr-3">{job.invoice_no || "—"}</td>
+                            <td className="py-2 pr-3 text-right">
+                              {job.final_total
+                                ? job.final_total.toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                   {jobReport.jobs.length > 50 && (
@@ -1033,9 +1083,12 @@ const Reports = () => {
                           <th className="py-2 pr-3">Item</th>
                           <th className="py-2 pr-3">Type</th>
                           <th className="py-2 pr-3 text-right">Qty</th>
+                          <th className="py-2 pr-3">Unit</th>
+                          <th className="py-2 pr-3 text-right">Unit Cost</th>
                           <th className="py-2 pr-3 text-right">Reorder</th>
                           <th className="py-2 pr-3 text-right">Used</th>
                           <th className="py-2 pr-3">Status</th>
+                          <th className="py-2 pr-3">Notes</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1044,7 +1097,13 @@ const Reports = () => {
                             <td className="py-2 pr-3">{item.name}</td>
                             <td className="py-2 pr-3">{item.type}</td>
                             <td className="py-2 pr-3 text-right">{item.quantity}</td>
-                            <td className="py-2 pr-3 text-right">{item.reorder_level}</td>
+                            <td className="py-2 pr-3">{item.unit || <span className="text-muted-foreground">—</span>}</td>
+                            <td className="py-2 pr-3 text-right">
+                              {item.unit_cost
+                                ? item.unit_cost.toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                : <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="py-2 pr-3 text-right">{item.reorder_level ?? <span className="text-muted-foreground">—</span>}</td>
                             <td className="py-2 pr-3 text-right">{item.total_used}</td>
                             <td className="py-2 pr-3">
                               {item.low_stock ? (
@@ -1052,6 +1111,9 @@ const Reports = () => {
                               ) : (
                                 <Badge variant="outline">OK</Badge>
                               )}
+                            </td>
+                            <td className="py-2 pr-3 max-w-[200px] truncate" title={item.description || "—"}>
+                              {item.description || <span className="text-muted-foreground">—</span>}
                             </td>
                           </tr>
                         ))}
