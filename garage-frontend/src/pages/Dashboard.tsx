@@ -639,7 +639,7 @@ const Dashboard = () => {
               <form onSubmit={handleAddCustomer} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="name">Full Name</Label>
-                  <Input id="name" name="name" placeholder="John Doe" required />
+                  <Input id="name" name="name" placeholder="Full Name" required />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
@@ -647,7 +647,7 @@ const Dashboard = () => {
                     id="email"
                     name="email"
                     type="email"
-                    placeholder="john@example.com"
+                    placeholder="email@example.com"
                   />
                 </div>
                 <div className="space-y-2">

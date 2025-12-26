@@ -915,7 +915,7 @@ const Suppliers = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="contactName">Contact Person</Label>
-                    <Input id="contactName" name="contact_name" placeholder="John Doe" />
+                    <Input id="contactName" name="contact_name" placeholder="Full Name" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="supplierPhone">Phone Number</Label>

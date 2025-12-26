@@ -274,7 +274,7 @@ const Technicians = () => {
             <form onSubmit={handleCreateTechnician} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="name">Full Name</Label>
-                <Input id="name" name="name" placeholder="John Doe" required />
+                <Input id="name" name="name" placeholder="Full Name" required />
               </div>
 
               <div className="space-y-2">
