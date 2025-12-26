@@ -682,6 +682,49 @@ const generateInvoicePdfBuffer = (invoice) =>
             y += 30;
         }
 
+        // ═══════════════════════════════════════════════════════════
+        // FOOTER
+        // ═══════════════════════════════════════════════════════════
+        // Ensure we have enough space for footer, add new page if needed
+        const footerSpace = 60;
+        const footerY = doc.page.height - margin - footerSpace;
+        
+        if (y > footerY - 20) {
+            doc.addPage();
+            // Add watermark to new page
+            if (fs.existsSync(logoPath)) {
+                doc.save();
+                doc.opacity(0.15);
+                const logoWidth = 400;
+                const logoHeight = 230;
+                const logoX = (pageWidth - logoWidth) / 2;
+                const logoY = (doc.page.height - logoHeight) / 2;
+                doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                doc.restore();
+                doc.opacity(1);
+            }
+            y = margin + 40;
+        }
+        
+        // Position footer near bottom of current page
+        const finalFooterY = doc.page.height - margin - footerSpace;
+        
+        // Draw thick dark gray horizontal line
+        doc.save();
+        doc.strokeColor("#374151"); // Dark gray color
+        doc.lineWidth(3);
+        doc.moveTo(margin, finalFooterY)
+            .lineTo(pageWidth - margin, finalFooterY)
+            .stroke();
+        doc.restore();
+        
+        // Add thank you message below the line (centered, dark red)
+        doc.font("Helvetica").fontSize(10).fillColor(PRIMARY);
+        const thankYouText = "Thank you for choosing New Yasuki Auto Motors!";
+        doc.text(thankYouText, margin, finalFooterY + 10, { 
+            width: contentWidth,
+            align: "center" 
+        });
 
         doc.end();
     });
