@@ -321,7 +321,7 @@ const fetchRevenueReport = async (range) => {
     // Get expenses list
     const expenses = await allAsync(
         `
-        SELECT id, description, category, amount, expense_date, payment_status
+        SELECT id, description, category, amount, expense_date, payment_status, payment_method, remarks
         FROM Expenses
         WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
         ORDER BY expense_date DESC, id DESC
@@ -944,6 +944,7 @@ const renderInventoryPdf = (report) =>
 // Excel Generation Functions with Professional Formatting
 const renderExpenseExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
+    const CURRENCY_FMT = '"LKR "#,##0.00';
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
@@ -967,7 +968,7 @@ const renderExpenseExcel = async (report) => {
     summarySheet.getRow(row).getCell(1).value = "Total Expenses";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
     summarySheet.getRow(row).getCell(2).value = report.totals.totalAmount;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
+    summarySheet.getRow(row).getCell(2).numFmt = CURRENCY_FMT;
     summarySheet.getRow(row).getCell(2).font = { bold: true, size: 12 };
     
     row++;
@@ -996,7 +997,7 @@ const renderExpenseExcel = async (report) => {
         dataRow.getCell(1).value = cat.category;
         dataRow.getCell(2).value = cat.count;
         dataRow.getCell(3).value = cat.total;
-        dataRow.getCell(3).numFmt = '"$"#,##0.00';
+        dataRow.getCell(3).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
             dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
@@ -1023,7 +1024,7 @@ const renderExpenseExcel = async (report) => {
         dataRow.getCell(1).value = stat.status || "N/A";
         dataRow.getCell(2).value = stat.count;
         dataRow.getCell(3).value = stat.total || 0;
-        dataRow.getCell(3).numFmt = '"$"#,##0.00';
+        dataRow.getCell(3).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
             dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
@@ -1034,12 +1035,11 @@ const renderExpenseExcel = async (report) => {
     summarySheet.getColumn(2).width = 15;
     summarySheet.getColumn(3).width = 18;
     
-    // Details Sheet
+    // Details Sheet (match Expense PDF table)
     const detailsSheet = workbook.addWorksheet("Expense Details");
-    
-    const detailHeaders = ["ID", "Date", "Description", "Category", "Amount", "Payment Status", "Payment Method", "Remarks"];
+    const pdfHeaders = ["Date", "Description", "Category", "Amount", "Status"];
     const headerRow = detailsSheet.getRow(1);
-    detailHeaders.forEach((header, idx) => {
+    pdfHeaders.forEach((header, idx) => {
         const cell = headerRow.getCell(idx + 1);
         cell.value = header;
         cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -1047,37 +1047,69 @@ const renderExpenseExcel = async (report) => {
         cell.alignment = { vertical: "middle", horizontal: "center" };
     });
     headerRow.height = 20;
-    
+
     report.expenses.forEach((exp, idx) => {
         const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = exp.id;
-        row.getCell(2).value = new Date(exp.expense_date);
-        row.getCell(2).numFmt = "mm/dd/yyyy";
-        row.getCell(3).value = exp.description || "";
-        row.getCell(4).value = exp.category || "Uncategorized";
-        row.getCell(5).value = exp.amount;
-        row.getCell(5).numFmt = '"$"#,##0.00';
-        row.getCell(6).value = exp.payment_status || "N/A";
-        row.getCell(7).value = exp.payment_method || "N/A";
-        row.getCell(8).value = exp.remarks || "";
-        
+        row.getCell(1).value = exp.expense_date ? new Date(exp.expense_date) : null;
+        row.getCell(1).numFmt = "mm/dd/yyyy";
+        row.getCell(2).value = exp.description || "—";
+        row.getCell(3).value = exp.category || "Uncategorized";
+        row.getCell(4).value = exp.amount || 0;
+        row.getCell(4).numFmt = CURRENCY_FMT;
+        row.getCell(5).value = (exp.payment_status || "pending").toUpperCase();
+
         if (idx % 2 === 0) {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
     });
-    
-    // Set column widths for details
-    detailsSheet.getColumn(1).width = 8;
-    detailsSheet.getColumn(2).width = 12;
-    detailsSheet.getColumn(3).width = 30;
-    detailsSheet.getColumn(4).width = 18;
-    detailsSheet.getColumn(5).width = 15;
-    detailsSheet.getColumn(6).width = 15;
-    detailsSheet.getColumn(7).width = 15;
-    detailsSheet.getColumn(8).width = 30;
+
+    detailsSheet.getColumn(1).width = 12;
+    detailsSheet.getColumn(2).width = 36;
+    detailsSheet.getColumn(3).width = 20;
+    detailsSheet.getColumn(4).width = 14;
+    detailsSheet.getColumn(5).width = 12;
+
+    // Raw sheet (all fields)
+    const rawSheet = workbook.addWorksheet("Expense Raw");
+    const rawHeaders = ["ID", "Date", "Description", "Category", "Amount", "Payment Status", "Payment Method", "Remarks"];
+    const rawHeaderRow = rawSheet.getRow(1);
+    rawHeaders.forEach((header, idx) => {
+        const cell = rawHeaderRow.getCell(idx + 1);
+        cell.value = header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+    rawHeaderRow.height = 20;
+
+    report.expenses.forEach((exp, idx) => {
+        const row = rawSheet.getRow(idx + 2);
+        row.getCell(1).value = exp.id;
+        row.getCell(2).value = exp.expense_date ? new Date(exp.expense_date) : null;
+        row.getCell(2).numFmt = "mm/dd/yyyy";
+        row.getCell(3).value = exp.description || "";
+        row.getCell(4).value = exp.category || "Uncategorized";
+        row.getCell(5).value = exp.amount || 0;
+        row.getCell(5).numFmt = CURRENCY_FMT;
+        row.getCell(6).value = exp.payment_status || "";
+        row.getCell(7).value = exp.payment_method || "";
+        row.getCell(8).value = exp.remarks || "";
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+    });
+
+    rawSheet.getColumn(1).width = 8;
+    rawSheet.getColumn(2).width = 12;
+    rawSheet.getColumn(3).width = 36;
+    rawSheet.getColumn(4).width = 20;
+    rawSheet.getColumn(5).width = 14;
+    rawSheet.getColumn(6).width = 16;
+    rawSheet.getColumn(7).width = 18;
+    rawSheet.getColumn(8).width = 30;
     
     // Add borders
-    [summarySheet, detailsSheet].forEach(sheet => {
+    [summarySheet, detailsSheet, rawSheet].forEach(sheet => {
         sheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
                 cell.border = {
@@ -1096,6 +1128,7 @@ const renderExpenseExcel = async (report) => {
 
 const renderJobExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
+    const CURRENCY_FMT = '"LKR "#,##0.00';
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
@@ -1125,7 +1158,7 @@ const renderJobExcel = async (report) => {
     summarySheet.getRow(row).getCell(1).value = "Completed Revenue";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
     summarySheet.getRow(row).getCell(2).value = report.totals.completedRevenue;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
+    summarySheet.getRow(row).getCell(2).numFmt = CURRENCY_FMT;
     summarySheet.getRow(row).getCell(2).font = { bold: true, size: 12 };
     
     // Status Breakdown
@@ -1156,12 +1189,11 @@ const renderJobExcel = async (report) => {
     summarySheet.getColumn(1).width = 25;
     summarySheet.getColumn(2).width = 15;
     
-    // Details Sheet
+    // Details Sheet (match Job PDF table: Created, Job, Customer, Plate, Status, Invoice, Amount)
     const detailsSheet = workbook.addWorksheet("Job Details");
-    
-    const detailHeaders = ["ID", "Date", "Description", "Category", "Customer", "Vehicle", "Status", "Invoice No", "Total"];
+    const pdfHeaders = ["Created", "Job", "Customer", "Plate", "Status", "Invoice", "Amount"];
     const headerRow = detailsSheet.getRow(1);
-    detailHeaders.forEach((header, idx) => {
+    pdfHeaders.forEach((header, idx) => {
         const cell = headerRow.getCell(idx + 1);
         cell.value = header;
         cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -1169,39 +1201,76 @@ const renderJobExcel = async (report) => {
         cell.alignment = { vertical: "middle", horizontal: "center" };
     });
     headerRow.height = 20;
-    
+
     report.jobs.forEach((job, idx) => {
         const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = job.id;
-        row.getCell(2).value = new Date(job.created_at);
-        row.getCell(2).numFmt = "mm/dd/yyyy";
-        row.getCell(3).value = job.description || "";
-        row.getCell(4).value = job.category || "N/A";
-        row.getCell(5).value = job.customer_name || "N/A";
-        row.getCell(6).value = job.plate || "N/A";
-        row.getCell(7).value = job.job_status;
-        row.getCell(8).value = job.invoice_no || "N/A";
-        row.getCell(9).value = job.final_total || 0;
-        row.getCell(9).numFmt = '"$"#,##0.00';
-        
+        row.getCell(1).value = job.created_at ? new Date(job.created_at) : null;
+        row.getCell(1).numFmt = "mm/dd/yyyy";
+        row.getCell(2).value = job.description || "—";
+        row.getCell(3).value = job.customer_name || "Walk-in";
+        row.getCell(4).value = job.plate || "—";
+        row.getCell(5).value = job.job_status || "";
+        row.getCell(6).value = job.invoice_no || "—";
+        row.getCell(7).value = job.final_total || 0;
+        row.getCell(7).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
     });
-    
-    // Set column widths
-    detailsSheet.getColumn(1).width = 8;
-    detailsSheet.getColumn(2).width = 12;
-    detailsSheet.getColumn(3).width = 30;
-    detailsSheet.getColumn(4).width = 18;
-    detailsSheet.getColumn(5).width = 20;
-    detailsSheet.getColumn(6).width = 15;
-    detailsSheet.getColumn(7).width = 12;
-    detailsSheet.getColumn(8).width = 15;
-    detailsSheet.getColumn(9).width = 15;
+
+    detailsSheet.getColumn(1).width = 12;
+    detailsSheet.getColumn(2).width = 40;
+    detailsSheet.getColumn(3).width = 22;
+    detailsSheet.getColumn(4).width = 12;
+    detailsSheet.getColumn(5).width = 12;
+    detailsSheet.getColumn(6).width = 16;
+    detailsSheet.getColumn(7).width = 14;
+
+    // Raw sheet (keep all useful fields)
+    const rawSheet = workbook.addWorksheet("Job Raw");
+    const rawHeaders = ["ID", "Created", "Description", "Category", "Customer", "Plate", "Status", "Invoice No", "Invoice Status", "Amount"];
+    const rawHeaderRow = rawSheet.getRow(1);
+    rawHeaders.forEach((header, idx) => {
+        const cell = rawHeaderRow.getCell(idx + 1);
+        cell.value = header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+    rawHeaderRow.height = 20;
+
+    report.jobs.forEach((job, idx) => {
+        const row = rawSheet.getRow(idx + 2);
+        row.getCell(1).value = job.id;
+        row.getCell(2).value = job.created_at ? new Date(job.created_at) : null;
+        row.getCell(2).numFmt = "mm/dd/yyyy";
+        row.getCell(3).value = job.description || "";
+        row.getCell(4).value = job.category || "";
+        row.getCell(5).value = job.customer_name || "";
+        row.getCell(6).value = job.plate || "";
+        row.getCell(7).value = job.job_status || "";
+        row.getCell(8).value = job.invoice_no || "";
+        row.getCell(9).value = job.payment_status || "";
+        row.getCell(10).value = job.final_total || 0;
+        row.getCell(10).numFmt = CURRENCY_FMT;
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+    });
+
+    rawSheet.getColumn(1).width = 8;
+    rawSheet.getColumn(2).width = 12;
+    rawSheet.getColumn(3).width = 40;
+    rawSheet.getColumn(4).width = 18;
+    rawSheet.getColumn(5).width = 22;
+    rawSheet.getColumn(6).width = 12;
+    rawSheet.getColumn(7).width = 12;
+    rawSheet.getColumn(8).width = 16;
+    rawSheet.getColumn(9).width = 14;
+    rawSheet.getColumn(10).width = 14;
     
     // Add borders
-    [summarySheet, detailsSheet].forEach(sheet => {
+    [summarySheet, detailsSheet, rawSheet].forEach(sheet => {
         sheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
                 cell.border = {
@@ -1291,12 +1360,11 @@ const renderInventoryExcel = async (report) => {
     summarySheet.getColumn(4).width = 12;
     summarySheet.getColumn(5).width = 15;
     
-    // Details Sheet
+    // Details Sheet (match Inventory PDF table: Item, Qty, Reorder, Used, Low)
     const detailsSheet = workbook.addWorksheet("Inventory Details");
-    
-    const detailHeaders = ["ID", "Name", "Type", "Quantity", "Reorder Level", "Used", "Status"];
+    const pdfHeaders = ["Item", "Qty", "Reorder", "Used", "Low"];
     const headerRow = detailsSheet.getRow(1);
-    detailHeaders.forEach((header, idx) => {
+    pdfHeaders.forEach((header, idx) => {
         const cell = headerRow.getCell(idx + 1);
         cell.value = header;
         cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -1304,37 +1372,68 @@ const renderInventoryExcel = async (report) => {
         cell.alignment = { vertical: "middle", horizontal: "center" };
     });
     headerRow.height = 20;
-    
+
     report.items.forEach((item, idx) => {
         const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = item.id;
-        row.getCell(2).value = item.name;
-        row.getCell(3).value = item.type || "N/A";
-        row.getCell(4).value = item.quantity;
-        row.getCell(5).value = item.reorder_level;
-        row.getCell(6).value = item.total_used;
-        row.getCell(7).value = item.quantity <= item.reorder_level ? "Low Stock" : "OK";
-        
-        if (item.quantity <= item.reorder_level) {
-            row.getCell(7).font = { color: { argb: "FFFF0000" }, bold: true };
+        row.getCell(1).value = item.name || "";
+        row.getCell(2).value = item.quantity ?? 0;
+        row.getCell(3).value = item.reorder_level ?? 0;
+        row.getCell(4).value = item.total_used ?? 0;
+        row.getCell(5).value = item.low_stock ? "Yes" : "No";
+        if (item.low_stock) {
+            row.getCell(5).font = { color: { argb: "FFFF0000" }, bold: true };
         }
-        
         if (idx % 2 === 0) {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
     });
-    
-    // Set column widths
-    detailsSheet.getColumn(1).width = 8;
-    detailsSheet.getColumn(2).width = 30;
-    detailsSheet.getColumn(3).width = 18;
+
+    detailsSheet.getColumn(1).width = 34;
+    detailsSheet.getColumn(2).width = 12;
+    detailsSheet.getColumn(3).width = 12;
     detailsSheet.getColumn(4).width = 12;
-    detailsSheet.getColumn(5).width = 15;
-    detailsSheet.getColumn(6).width = 12;
-    detailsSheet.getColumn(7).width = 15;
+    detailsSheet.getColumn(5).width = 10;
+
+    // Raw sheet (all fields)
+    const rawSheet = workbook.addWorksheet("Inventory Raw");
+    const rawHeaders = ["ID", "Name", "Type", "Quantity", "Reorder Level", "Used", "Low Stock"];
+    const rawHeaderRow = rawSheet.getRow(1);
+    rawHeaders.forEach((header, idx) => {
+        const cell = rawHeaderRow.getCell(idx + 1);
+        cell.value = header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+    rawHeaderRow.height = 20;
+
+    report.items.forEach((item, idx) => {
+        const row = rawSheet.getRow(idx + 2);
+        row.getCell(1).value = item.id;
+        row.getCell(2).value = item.name || "";
+        row.getCell(3).value = item.type || "";
+        row.getCell(4).value = item.quantity ?? 0;
+        row.getCell(5).value = item.reorder_level ?? 0;
+        row.getCell(6).value = item.total_used ?? 0;
+        row.getCell(7).value = item.low_stock ? "Yes" : "No";
+        if (item.low_stock) {
+            row.getCell(7).font = { color: { argb: "FFFF0000" }, bold: true };
+        }
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+    });
+
+    rawSheet.getColumn(1).width = 8;
+    rawSheet.getColumn(2).width = 34;
+    rawSheet.getColumn(3).width = 16;
+    rawSheet.getColumn(4).width = 12;
+    rawSheet.getColumn(5).width = 14;
+    rawSheet.getColumn(6).width = 12;
+    rawSheet.getColumn(7).width = 12;
     
     // Add borders
-    [summarySheet, detailsSheet].forEach(sheet => {
+    [summarySheet, detailsSheet, rawSheet].forEach(sheet => {
         sheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
                 cell.border = {
@@ -1353,6 +1452,7 @@ const renderInventoryExcel = async (report) => {
 
 const renderRevenueExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
+    const CURRENCY_FMT = '"LKR "#,##0.00';
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
@@ -1371,42 +1471,38 @@ const renderRevenueExcel = async (report) => {
     summarySheet.getRow(4).getCell(1).value = "Generated:";
     summarySheet.getRow(4).getCell(2).value = new Date().toISOString().slice(0, 10);
     
-    // Totals section
+    // Totals section (match the PDF: Net Revenue, Invoices Total, Expenses Total)
+    const invoicesTotal =
+        report?.totals?.invoicesTotal ?? report?.totals?.totalRevenue ?? 0;
+    const expensesTotal = report?.totals?.expensesTotal ?? 0;
+    const netRevenue =
+        report?.totals?.revenue ?? Number(invoicesTotal) - Number(expensesTotal);
+    const invoiceCount =
+        report?.totals?.invoiceCount ?? (Array.isArray(report?.invoices) ? report.invoices.length : 0);
+
     let row = 6;
-    summarySheet.getRow(row).getCell(1).value = "Total Revenue";
+    summarySheet.getRow(row).getCell(1).value = "Net Revenue";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
-    summarySheet.getRow(row).getCell(2).value = report.totals.totalRevenue;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
+    summarySheet.getRow(row).getCell(2).value = netRevenue;
+    summarySheet.getRow(row).getCell(2).numFmt = CURRENCY_FMT;
     summarySheet.getRow(row).getCell(2).font = { bold: true, size: 12 };
-    
+
     row++;
-    summarySheet.getRow(row).getCell(1).value = "Total Invoices";
+    summarySheet.getRow(row).getCell(1).value = "Invoices Total";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
-    summarySheet.getRow(row).getCell(2).value = report.totals.invoiceCount;
-    
+    summarySheet.getRow(row).getCell(2).value = invoicesTotal;
+    summarySheet.getRow(row).getCell(2).numFmt = CURRENCY_FMT;
+
     row++;
-    summarySheet.getRow(row).getCell(1).value = "Average per Invoice";
+    summarySheet.getRow(row).getCell(1).value = "Expenses Total";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
-    summarySheet.getRow(row).getCell(2).value = report.totals.averageInvoice;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
-    
+    summarySheet.getRow(row).getCell(2).value = expensesTotal;
+    summarySheet.getRow(row).getCell(2).numFmt = CURRENCY_FMT;
+
     row++;
-    summarySheet.getRow(row).getCell(1).value = "Paid Revenue";
+    summarySheet.getRow(row).getCell(1).value = "Invoice Count";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
-    summarySheet.getRow(row).getCell(2).value = report.totals.paidRevenue;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
-    
-    row++;
-    summarySheet.getRow(row).getCell(1).value = "Partial Revenue";
-    summarySheet.getRow(row).getCell(1).font = { bold: true };
-    summarySheet.getRow(row).getCell(2).value = report.totals.partialRevenue;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
-    
-    row++;
-    summarySheet.getRow(row).getCell(1).value = "Unpaid Revenue";
-    summarySheet.getRow(row).getCell(1).font = { bold: true };
-    summarySheet.getRow(row).getCell(2).value = report.totals.unpaidRevenue;
-    summarySheet.getRow(row).getCell(2).numFmt = '"$"#,##0.00';
+    summarySheet.getRow(row).getCell(2).value = invoiceCount;
     
     // Payment Status Breakdown
     row += 2;
@@ -1429,7 +1525,7 @@ const renderRevenueExcel = async (report) => {
         dataRow.getCell(1).value = stat.status || "N/A";
         dataRow.getCell(2).value = stat.count;
         dataRow.getCell(3).value = stat.total || 0;
-        dataRow.getCell(3).numFmt = '"$"#,##0.00';
+        dataRow.getCell(3).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
             dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
         }
@@ -1440,10 +1536,10 @@ const renderRevenueExcel = async (report) => {
     summarySheet.getColumn(2).width = 18;
     summarySheet.getColumn(3).width = 18;
     
-    // Details Sheet
-    const detailsSheet = workbook.addWorksheet("Invoice Details");
+    // Details Sheet: Invoices (match Revenue PDF table: Date, Invoice No, Customer, Amount, Status)
+    const detailsSheet = workbook.addWorksheet("Invoices");
     
-    const detailHeaders = ["ID", "Date", "Invoice No", "Customer", "Job Description", "Status", "Total"];
+    const detailHeaders = ["Date", "Invoice No", "Customer", "Amount", "Status"];
     const headerRow = detailsSheet.getRow(1);
     detailHeaders.forEach((header, idx) => {
         const cell = headerRow.getCell(idx + 1);
@@ -1456,15 +1552,13 @@ const renderRevenueExcel = async (report) => {
     
     report.invoices.forEach((inv, idx) => {
         const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = inv.id;
-        row.getCell(2).value = new Date(inv.invoice_date);
-        row.getCell(2).numFmt = "mm/dd/yyyy";
-        row.getCell(3).value = inv.invoice_no || "N/A";
-        row.getCell(4).value = inv.customer_name || "N/A";
-        row.getCell(5).value = inv.job_description || "N/A";
-        row.getCell(6).value = inv.payment_status || "unpaid";
-        row.getCell(7).value = inv.final_total || 0;
-        row.getCell(7).numFmt = '"$"#,##0.00';
+        row.getCell(1).value = inv.invoice_date ? new Date(inv.invoice_date) : null;
+        row.getCell(1).numFmt = "mm/dd/yyyy";
+        row.getCell(2).value = inv.invoice_no || "N/A";
+        row.getCell(3).value = inv.customer_name || "N/A";
+        row.getCell(4).value = inv.final_total || 0;
+        row.getCell(4).numFmt = CURRENCY_FMT;
+        row.getCell(5).value = (inv.payment_status || "unpaid").toUpperCase();
         
         if (idx % 2 === 0) {
             row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
@@ -1472,16 +1566,123 @@ const renderRevenueExcel = async (report) => {
     });
     
     // Set column widths
-    detailsSheet.getColumn(1).width = 8;
-    detailsSheet.getColumn(2).width = 12;
-    detailsSheet.getColumn(3).width = 15;
-    detailsSheet.getColumn(4).width = 20;
-    detailsSheet.getColumn(5).width = 30;
-    detailsSheet.getColumn(6).width = 12;
-    detailsSheet.getColumn(7).width = 15;
+    detailsSheet.getColumn(1).width = 12;
+    detailsSheet.getColumn(2).width = 18;
+    detailsSheet.getColumn(3).width = 26;
+    detailsSheet.getColumn(4).width = 14;
+    detailsSheet.getColumn(5).width = 12;
+
+    // Details Sheet: Expenses (match Revenue PDF table: Date, Description, Category, Amount, Status)
+    const expensesSheet = workbook.addWorksheet("Expenses");
+    const expenseHeaders = ["Date", "Description", "Category", "Amount", "Status"];
+    const expensesHeaderRow = expensesSheet.getRow(1);
+    expenseHeaders.forEach((header, idx) => {
+        const cell = expensesHeaderRow.getCell(idx + 1);
+        cell.value = header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+    expensesHeaderRow.height = 20;
+
+    (report.expenses || []).forEach((exp, idx) => {
+        const row = expensesSheet.getRow(idx + 2);
+        row.getCell(1).value = exp.expense_date ? new Date(exp.expense_date) : null;
+        row.getCell(1).numFmt = "mm/dd/yyyy";
+        row.getCell(2).value = exp.description || "—";
+        row.getCell(3).value = exp.category || "Uncategorized";
+        row.getCell(4).value = exp.amount || 0;
+        row.getCell(4).numFmt = CURRENCY_FMT;
+        row.getCell(5).value = (exp.payment_status || "pending").toUpperCase();
+
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+    });
+
+    expensesSheet.getColumn(1).width = 12;
+    expensesSheet.getColumn(2).width = 36;
+    expensesSheet.getColumn(3).width = 20;
+    expensesSheet.getColumn(4).width = 14;
+    expensesSheet.getColumn(5).width = 12;
+
+    // Raw sheets (full fields)
+    const invoicesRawSheet = workbook.addWorksheet("Invoices Raw");
+    const invoicesRawHeaders = ["ID", "Date", "Invoice No", "Customer", "Job Description", "Status", "Amount"];
+    const invRawHeaderRow = invoicesRawSheet.getRow(1);
+    invoicesRawHeaders.forEach((header, idx) => {
+        const cell = invRawHeaderRow.getCell(idx + 1);
+        cell.value = header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+    invRawHeaderRow.height = 20;
+
+    (report.invoices || []).forEach((inv, idx) => {
+        const row = invoicesRawSheet.getRow(idx + 2);
+        row.getCell(1).value = inv.id ?? null;
+        row.getCell(2).value = inv.invoice_date ? new Date(inv.invoice_date) : null;
+        row.getCell(2).numFmt = "mm/dd/yyyy";
+        row.getCell(3).value = inv.invoice_no || "";
+        row.getCell(4).value = inv.customer_name || "";
+        row.getCell(5).value = inv.job_description || "";
+        row.getCell(6).value = inv.payment_status || "";
+        row.getCell(7).value = inv.final_total || 0;
+        row.getCell(7).numFmt = CURRENCY_FMT;
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+    });
+
+    invoicesRawSheet.getColumn(1).width = 8;
+    invoicesRawSheet.getColumn(2).width = 12;
+    invoicesRawSheet.getColumn(3).width = 18;
+    invoicesRawSheet.getColumn(4).width = 26;
+    invoicesRawSheet.getColumn(5).width = 40;
+    invoicesRawSheet.getColumn(6).width = 12;
+    invoicesRawSheet.getColumn(7).width = 14;
+
+    const expensesRawSheet = workbook.addWorksheet("Expenses Raw");
+    const expensesRawHeaders = ["ID", "Date", "Description", "Category", "Amount", "Payment Status", "Payment Method", "Remarks"];
+    const expRawHeaderRow = expensesRawSheet.getRow(1);
+    expensesRawHeaders.forEach((header, idx) => {
+        const cell = expRawHeaderRow.getCell(idx + 1);
+        cell.value = header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+    expRawHeaderRow.height = 20;
+
+    (report.expenses || []).forEach((exp, idx) => {
+        const row = expensesRawSheet.getRow(idx + 2);
+        row.getCell(1).value = exp.id ?? null;
+        row.getCell(2).value = exp.expense_date ? new Date(exp.expense_date) : null;
+        row.getCell(2).numFmt = "mm/dd/yyyy";
+        row.getCell(3).value = exp.description || "";
+        row.getCell(4).value = exp.category || "";
+        row.getCell(5).value = exp.amount || 0;
+        row.getCell(5).numFmt = CURRENCY_FMT;
+        row.getCell(6).value = exp.payment_status || "";
+        row.getCell(7).value = exp.payment_method || "";
+        row.getCell(8).value = exp.remarks || "";
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+    });
+
+    expensesRawSheet.getColumn(1).width = 8;
+    expensesRawSheet.getColumn(2).width = 12;
+    expensesRawSheet.getColumn(3).width = 36;
+    expensesRawSheet.getColumn(4).width = 20;
+    expensesRawSheet.getColumn(5).width = 14;
+    expensesRawSheet.getColumn(6).width = 16;
+    expensesRawSheet.getColumn(7).width = 18;
+    expensesRawSheet.getColumn(8).width = 30;
     
     // Add borders
-    [summarySheet, detailsSheet].forEach(sheet => {
+    [summarySheet, detailsSheet, expensesSheet, invoicesRawSheet, expensesRawSheet].forEach(sheet => {
         sheet.eachRow((row, rowNumber) => {
             row.eachCell((cell) => {
                 cell.border = {
@@ -2061,29 +2262,6 @@ const renderRevenuePdf = (report) =>
 
         doc.end();
     });
-
-router.get("/revenue", async (req, res) => {
-    try {
-        const range = deriveDateRange(req.query);
-        const report = await fetchRevenueReport(range);
-        res.json(report);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-router.get("/revenue/pdf", async (req, res) => {
-    try {
-        const range = deriveDateRange(req.query);
-        const report = await fetchRevenueReport(range);
-        const buffer = await renderRevenuePdf(report);
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", `attachment; filename=revenue-report-${range.startDate}-to-${range.endDate}.pdf`);
-        res.send(buffer);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
 
 // Dashboard stats endpoint
 router.get("/dashboard", async (req, res) => {
