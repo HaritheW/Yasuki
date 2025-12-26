@@ -648,6 +648,7 @@ const Dashboard = () => {
                     name="email"
                     type="email"
                     placeholder="email@example.com"
+                    required
                   />
                 </div>
                 <div className="space-y-2">
@@ -657,11 +658,12 @@ const Dashboard = () => {
                     name="phone"
                     type="tel"
                     placeholder="+1234567890"
+                    required
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="address">Address</Label>
-                  <Input id="address" name="address" placeholder="123 Main St, City, State" />
+                  <Input id="address" name="address" placeholder="123 Main St, City, State" required />
                 </div>
                 <div className="flex justify-end gap-3">
                   <Button type="button" variant="outline" onClick={() => setAddCustomerOpen(false)}>

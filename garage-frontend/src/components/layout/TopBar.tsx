@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bell, RefreshCw, User } from "lucide-react";
+import { Bell, RefreshCw } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -207,9 +207,6 @@ export function TopBar() {
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button variant="ghost" size="icon">
-          <User className="h-5 w-5" />
-        </Button>
       </div>
     </header>
   );
