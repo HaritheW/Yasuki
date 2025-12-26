@@ -501,15 +501,26 @@ const generateInvoicePdfBuffer = (invoice) =>
         }
 
         // ═══════════════════════════════════════════════════════════
-        // HEADER - COMPANY DETAILS (CENTERED)
+        // HEADER - LOGO + COMPANY DETAILS
         // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(18).fillColor(PRIMARY);
-        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", margin, y, { width: contentWidth, align: "center" });
-        y += 22;
-
-        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-        doc.text("071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", margin, y, { width: contentWidth, align: "center" });
-        y += 15;
+        const logoSize = 50;
+        const logoX = margin;
+        
+        // Draw logo on left
+        if (fs.existsSync(logoPath)) {
+            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
+        }
+        
+        // Company details next to logo
+        const textX = margin + logoSize + 15;
+        
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
+        
+        y += logoSize + 10;
 
         // Divider
         doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
