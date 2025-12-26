@@ -1,6 +1,8 @@
 const express = require("express");
 const PDFDocument = require("pdfkit");
 const ExcelJS = require("exceljs");
+const fs = require("fs");
+const path = require("path");
 const router = express.Router();
 const db = require("../../database/db");
 
@@ -134,6 +136,210 @@ const pdfTruncate = (value, maxChars) => {
     return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
 };
 
+// ────────────────────────────────────────────────────────────────
+// Timezone helpers for Excel
+// SQLite CURRENT_TIMESTAMP is UTC. Many deployments run in UTC even on local PCs,
+// so we convert UTC timestamps to the business local time for display in exports.
+// Default offset is Sri Lanka (UTC+05:30).
+// ────────────────────────────────────────────────────────────────
+// Sri Lanka time is UTC+05:30 => +330 minutes
+const EXCEL_TZ_OFFSET_MINUTES = Number(process.env.EXCEL_TZ_OFFSET_MINUTES ?? 330);
+
+const parseSqliteDateTimeUtcMs = (value) => {
+    if (!value) return null;
+    if (value instanceof Date) return value.getTime();
+
+    const text = String(value).trim();
+    // ISO or any string Date.parse understands
+    if (text.includes("T") || text.endsWith("Z") || text.includes("+")) {
+        const ms = Date.parse(text);
+        return Number.isNaN(ms) ? null : ms;
+    }
+
+    // "YYYY-MM-DD"
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
+    const m1 = text.match(dateOnly);
+    if (m1) {
+        const y = Number(m1[1]);
+        const mo = Number(m1[2]);
+        const d = Number(m1[3]);
+        return Date.UTC(y, mo - 1, d, 0, 0, 0, 0);
+    }
+
+    // "YYYY-MM-DD HH:MM:SS" (optionally ".sss")
+    const dateTime = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
+    const m2 = text.match(dateTime);
+    if (m2) {
+        const y = Number(m2[1]);
+        const mo = Number(m2[2]);
+        const d = Number(m2[3]);
+        const hh = Number(m2[4]);
+        const mm = Number(m2[5]);
+        const ss = Number(m2[6] ?? 0);
+        const ms = Number(String(m2[7] ?? "0").padEnd(3, "0"));
+        return Date.UTC(y, mo - 1, d, hh, mm, ss, ms);
+    }
+
+    const fallback = Date.parse(text);
+    return Number.isNaN(fallback) ? null : fallback;
+};
+
+const asExcelLocalDate = (value, offsetMinutes = EXCEL_TZ_OFFSET_MINUTES) => {
+    const utcMs = parseSqliteDateTimeUtcMs(value);
+    if (utcMs === null) return null;
+    // Shift for display (Excel dates are timezone-less)
+    return new Date(utcMs + offsetMinutes * 60_000);
+};
+
+const formatExcelHeaderDateSL = (date) => {
+    if (!date) return "";
+    // We treat `date` as already shifted to Sri Lanka time, so format using UTC parts.
+    const dd = String(date.getUTCDate()).padStart(2, "0");
+    const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const yyyy = String(date.getUTCFullYear());
+    let h = date.getUTCHours();
+    const min = String(date.getUTCMinutes()).padStart(2, "0");
+    const ampm = h >= 12 ? "PM" : "AM";
+    h = h % 12;
+    if (h === 0) h = 12;
+    return `${dd}/${mm}/${yyyy} ${h}:${min} ${ampm}`;
+};
+
+// ────────────────────────────────────────────────────────────────
+// Excel styling helpers (business-friendly defaults)
+// ────────────────────────────────────────────────────────────────
+const EXCEL_BRAND_NAME = process.env.EXCEL_BRAND_NAME || "NEW YASUKI AUTO MOTORS (PVT) Ltd.";
+const EXCEL_THEME_DARK = "FF0f172a";
+const EXCEL_THEME_MUTED = "FF475569";
+const EXCEL_ALT_ROW = "FFF8FAFC";
+
+const setWorkbookMeta = (workbook) => {
+    try {
+        workbook.creator = EXCEL_BRAND_NAME;
+        workbook.lastModifiedBy = EXCEL_BRAND_NAME;
+        workbook.created = new Date();
+        workbook.modified = new Date();
+    } catch (_) {
+        // ignore (depends on ExcelJS version)
+    }
+};
+
+const styleHeaderRow = (row, columnCount) => {
+    row.height = 20;
+    for (let c = 1; c <= columnCount; c += 1) {
+        const cell = row.getCell(c);
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_THEME_DARK } };
+        cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+        cell.border = {
+            top: { style: "thin" },
+            left: { style: "thin" },
+            bottom: { style: "thin" },
+            right: { style: "thin" },
+        };
+    }
+};
+
+const applySheetChrome = (sheet, { headerRow = 1, headerColumnCount, freezeRow = headerRow + 0 } = {}) => {
+    // Freeze header row
+    sheet.views = [{ state: "frozen", ySplit: freezeRow }];
+    // Filter on header
+    if (headerColumnCount) {
+        sheet.autoFilter = {
+            from: { row: headerRow, column: 1 },
+            to: { row: headerRow, column: headerColumnCount },
+        };
+    }
+    sheet.properties.defaultRowHeight = 18;
+};
+
+const applyTableBorders = (sheet) => {
+    sheet.eachRow((row) => {
+        row.eachCell((cell) => {
+            if (!cell.border) {
+                cell.border = {
+                    top: { style: "thin" },
+                    left: { style: "thin" },
+                    bottom: { style: "thin" },
+                    right: { style: "thin" },
+                };
+            }
+        });
+    });
+};
+
+const setPrintSetup = (sheet, { landscape = false } = {}) => {
+    sheet.pageSetup = {
+        paperSize: 9, // A4
+        orientation: landscape ? "landscape" : "portrait",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        horizontalCentered: true,
+    };
+};
+
+const statusChip = (cell, raw) => {
+    const status = String(raw || "").trim().toLowerCase();
+    const map = {
+        paid: { fg: "FFDCFCE7", font: "FF166534" },     // green
+        pending: { fg: "FFFFF7ED", font: "FF9A3412" },  // orange
+        unpaid: { fg: "FFFEE2E2", font: "FF991B1B" },   // red
+        partial: { fg: "FFFEF9C3", font: "FF854D0E" },  // amber
+        completed: { fg: "FFDCFCE7", font: "FF166534" },
+        "in progress": { fg: "FFE0F2FE", font: "FF075985" }, // blue
+        cancelled: { fg: "FFFEE2E2", font: "FF991B1B" },
+    };
+    const style = map[status];
+    if (!style) return;
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: style.fg } };
+    cell.font = { bold: true, color: { argb: style.font } };
+    cell.alignment = { vertical: "middle", horizontal: "center" };
+};
+
+const addTotalsRow = (sheet, { labelColumn = 1, valueColumn, startRow, endRow, currency = false, label = "TOTAL" }) => {
+    if (!startRow || !endRow || endRow < startRow) return;
+    const rowIdx = endRow + 2;
+    const totalsRow = sheet.getRow(rowIdx);
+    totalsRow.height = 20;
+    totalsRow.getCell(labelColumn).value = label;
+    totalsRow.getCell(labelColumn).font = { bold: true, color: { argb: EXCEL_THEME_MUTED } };
+    if (valueColumn) {
+        const colLetter = sheet.getColumn(valueColumn).letter;
+        totalsRow.getCell(valueColumn).value = { formula: `SUM(${colLetter}${startRow}:${colLetter}${endRow})` };
+        totalsRow.getCell(valueColumn).font = { bold: true };
+        totalsRow.getCell(valueColumn).alignment = { horizontal: "right" };
+        if (currency) totalsRow.getCell(valueColumn).numFmt = '"LKR "#,##0.00';
+    }
+};
+
+const addSheetBanner = (sheet, { reportTitle, range, columnCount }) => {
+    const cols = Math.max(1, Number(columnCount) || 1);
+    const generatedSL = asExcelLocalDate(new Date().toISOString());
+
+    sheet.mergeCells(1, 1, 1, cols);
+    const titleCell = sheet.getCell(1, 1);
+    titleCell.value = reportTitle;
+    titleCell.font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
+    titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_THEME_DARK } };
+    titleCell.alignment = { vertical: "middle", horizontal: "center" };
+    sheet.getRow(1).height = 30;
+
+    sheet.mergeCells(2, 1, 2, cols);
+    const metaCell = sheet.getCell(2, 1);
+    const periodText =
+        range && range.startDate && range.endDate ? `Period: ${range.startDate} → ${range.endDate}` : "";
+    const generatedText = `Generated (Sri Lanka): ${formatExcelHeaderDateSL(generatedSL)}`;
+    metaCell.value = [EXCEL_BRAND_NAME, periodText, generatedText].filter(Boolean).join("  •  ");
+    metaCell.font = { size: 10, color: { argb: "FFFFFFFF" } };
+    metaCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_THEME_MUTED } };
+    metaCell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    sheet.getRow(2).height = 20;
+
+    // spacer row
+    sheet.getRow(3).height = 6;
+};
+
 const attachPdfScaffold = (doc, { title, range }) => {
     let page = 1;
 
@@ -197,7 +403,7 @@ const attachPdfScaffold = (doc, { title, range }) => {
 const fetchExpenseReport = async (range) => {
     const expenses = await allAsync(
         `
-        SELECT id, description, category, amount, expense_date, payment_status, payment_method, remarks
+        SELECT id, description, category, amount, expense_date, payment_status, payment_method, remarks, created_at
         FROM Expenses
         WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
         ORDER BY DATE(expense_date) DESC, id DESC
@@ -248,10 +454,13 @@ const fetchJobReport = async (range) => {
             Jobs.description,
             Jobs.job_status,
             Jobs.created_at,
+            Jobs.updated_at,
+            Jobs.status_changed_at,
             Jobs.category,
             Customers.name AS customer_name,
             Vehicles.license_plate AS plate,
             Invoices.invoice_no,
+            Invoices.invoice_date,
             Invoices.final_total,
             Invoices.payment_status
         FROM Jobs
@@ -352,6 +561,7 @@ const fetchRevenueReport = async (range) => {
             Invoices.id,
             Invoices.invoice_no,
             Invoices.invoice_date,
+            Invoices.created_at,
             Invoices.final_total,
             Invoices.payment_status,
             Jobs.description AS job_description,
@@ -368,7 +578,7 @@ const fetchRevenueReport = async (range) => {
     // Get expenses list
     const expenses = await allAsync(
         `
-        SELECT id, description, category, amount, expense_date, payment_status, payment_method, remarks
+        SELECT id, description, category, amount, expense_date, payment_status, payment_method, remarks, created_at
         FROM Expenses
         WHERE DATE(expense_date) BETWEEN DATE(?) AND DATE(?)
         ORDER BY expense_date DESC, id DESC
@@ -416,11 +626,23 @@ const fetchInventoryReport = async (range) => {
             InventoryItems.id,
             InventoryItems.name,
             InventoryItems.type,
+            InventoryItems.unit,
+            InventoryItems.unit_cost,
+            InventoryItems.description,
             InventoryItems.quantity,
             InventoryItems.reorder_level,
+            InventoryItems.created_at,
+            InventoryItems.updated_at,
+            last_purchase.last_purchase_date,
             COALESCE(usage_summary.total_used, 0) AS total_used,
             CASE WHEN InventoryItems.quantity <= InventoryItems.reorder_level THEN 1 ELSE 0 END AS low_stock
         FROM InventoryItems
+        LEFT JOIN (
+            SELECT inventory_item_id, MAX(purchase_date) AS last_purchase_date
+            FROM SupplierPurchases
+            WHERE inventory_item_id IS NOT NULL
+            GROUP BY inventory_item_id
+        ) AS last_purchase ON last_purchase.inventory_item_id = InventoryItems.id
         LEFT JOIN (
             SELECT 
                 JobItems.inventory_item_id, 
@@ -457,540 +679,882 @@ const fetchInventoryReport = async (range) => {
 
 const renderExpensePdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 50, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
-        const pdf = attachPdfScaffold(doc, { title: "Expense Report", range: report.range });
 
-        const setFont = pdf.setFont;
-        const formatCurrency = pdfFormatCurrency;
-        const formatDate = pdfFormatDate;
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        // ═══════════════════════════════════════════════════════════
+        // CONFIGURATION
+        // ═══════════════════════════════════════════════════════════
+        const PRIMARY = "#B91C1C";      // Red for branding
+        const DARK = "#111827";         // Dark text
+        const GRAY = "#6B7280";         // Secondary text
+        const LIGHT = "#F9FAFB";        // Light background
+        const BORDER = "#E5E7EB";       // Borders
+        const margin = 50;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
 
-        doc.moveDown(0.4);
+        // Helper functions
+        const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const formatDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
+        const formatPeriodDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
 
-        // Summary band
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
+        let y = margin;
+
+        // ═══════════════════════════════════════════════════════════
+        // WATERMARK LOGO (centered, semi-transparent)
+        // ═══════════════════════════════════════════════════════════
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
             doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
+            doc.opacity(0.15);
+            const logoWidth = 400;
+            const logoHeight = 230;
+            const logoX = (pageWidth - logoWidth) / 2;
+            const logoY = (doc.page.height - logoHeight) / 2;
+            doc.image(logoPath, logoX, logoY, { width: logoWidth });
             doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
-        };
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Expenses",
-            formatCurrency(report.totals.totalAmount),
-            `${report.expenses.length} entr${report.expenses.length === 1 ? "y" : "ies"}`
-        );
-
-        const topCategory = report.categories[0];
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Top Category",
-            topCategory ? `${topCategory.category}` : "None",
-            topCategory ? formatCurrency(topCategory.total) : "No spend recorded"
-        );
-
-        const paidStatus = report.statuses.find((s) => (s.status || "").toLowerCase() === "paid");
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Paid Amount",
-            paidStatus ? formatCurrency(paidStatus.total) : formatCurrency(0),
-            paidStatus ? `${paidStatus.count} paid` : "No paid expenses"
-        );
-
-        doc.moveDown(6);
-
-        const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
-            doc.text(label, { continued: false });
-            doc.moveDown(0.4);
-        };
-
-        // Categories table
-        sectionTitle("By Category");
-        if (!report.categories.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No expenses recorded in this period.");
-        } else {
-            const widths = [200, 80, 80];
-            const headers = ["Category", "Entries", "Amount"];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            headers.forEach((title, idx) => {
-                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.categories.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [
-                    row.category,
-                    `${row.count}`,
-                    formatCurrency(row.total),
-                ];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+            doc.opacity(1);
         }
 
-        doc.moveDown(0.8);
-
-        // Status table
-        sectionTitle("By Payment Status");
-        if (!report.statuses.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No payment status data for this period.");
-        } else {
-            const widths = [140, 80, 100];
-            const headers = ["Status", "Entries", "Amount"];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            headers.forEach((title, idx) => {
-                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.statuses.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [
-                    (row.status || "unspecified").toUpperCase(),
-                    `${row.count}`,
-                    formatCurrency(row.total),
-                ];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+        // ═══════════════════════════════════════════════════════════
+        // HEADER - LOGO + COMPANY DETAILS
+        // ═══════════════════════════════════════════════════════════
+        const logoSize = 50;
+        const logoX = margin;
+        
+        // Draw logo on left
+        if (fs.existsSync(logoPath)) {
+            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
         }
+        
+        // Company details next to logo
+        const textX = margin + logoSize + 15;
+        
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
+        
+        y += logoSize + 10;
 
-        pdf.addPage();
+        // Divider
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
+        y += 15;
 
-        // Detail table
-        sectionTitle("Expense Details");
+        // ═══════════════════════════════════════════════════════════
+        // REPORT TITLE & INFO
+        // ═══════════════════════════════════════════════════════════
+        doc.font("Helvetica-Bold").fontSize(22).fillColor(DARK);
+        doc.text("EXPENSE REPORT", margin, y);
 
-        const header = ["Date", "Description", "Category", "Amount", "Status"];
-        const columnWidths = [70, 170, 100, 90, 70];
-        const startX = doc.page.margins.left;
-        const drawExpenseHeader = () => {
-        setFont({ size: 9, bold: true, color: "#475569" });
-        header.forEach((title, idx) => {
-            doc.text(title, startX + columnWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: columnWidths[idx],
-            });
+        // Period and generated date (right)
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        const periodText = `${formatPeriodDate(report.range.startDate)} - ${formatPeriodDate(report.range.endDate)}`;
+        doc.text(`Period: ${periodText}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
+        doc.text(`Generated: ${formatDate(new Date())}`, pageWidth - margin - 180, y + 12, { width: 180, align: "right" });
+
+        y += 40;
+
+        // ═══════════════════════════════════════════════════════════
+        // EXPENSE DETAILS TABLE
+        // ═══════════════════════════════════════════════════════════
+        const tableTop = y;
+        const col1 = 70;    // Date
+        const col2 = 170;   // Description
+        const col3 = 85;    // Category
+        const col4 = 90;    // Amount
+        const col5 = 80;    // Status
+        const rowH = 22;
+
+        // Header with attractive grid
+        const headerY = y;
+        doc.rect(margin, headerY, contentWidth, rowH).fill(DARK);
+        
+        // Draw grid lines for header
+        const headerCellPositions = [
+            { x: margin, width: col1 },
+            { x: margin + col1, width: col2 },
+            { x: margin + col1 + col2, width: col3 },
+            { x: margin + col1 + col2 + col3, width: col4 },
+            { x: margin + col1 + col2 + col3 + col4, width: col5 },
+        ];
+        
+        doc.save();
+        doc.strokeColor("#1f2937").lineWidth(0.5);
+        headerCellPositions.forEach((cell, idx) => {
+            if (idx > 0) {
+                // Vertical line between header cells
+                doc.moveTo(cell.x, headerY)
+                    .lineTo(cell.x, headerY + rowH)
+                    .stroke();
+            }
         });
-        doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + columnWidths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-        doc.moveDown(0.2);
-            setFont({ size: 9, color: "#0f172a" });
-        };
+        // Right border
+        doc.moveTo(margin + contentWidth, headerY)
+            .lineTo(margin + contentWidth, headerY + rowH)
+            .stroke();
+        // Bottom border
+        doc.moveTo(margin, headerY + rowH)
+            .lineTo(margin + contentWidth, headerY + rowH)
+            .stroke();
+        doc.restore();
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+        doc.text("Date", margin + 8, headerY + 7, { width: col1 - 16 });
+        doc.text("Description", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
+        doc.text("Category", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16 });
+        doc.text("Amount", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16, align: "right" });
+        doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "center" });
+        y += rowH;
 
-        drawExpenseHeader();
+        // Rows with attractive grid
+        const drawRow = (date, desc, category, amount, status, alt) => {
+            const rowX = margin;
+            const rowY = y;
+            
+            // Background color for alternating rows
+            if (alt) {
+                doc.save();
+                doc.rect(rowX, rowY, contentWidth, rowH).fill(LIGHT);
+                doc.restore();
+            }
+            
+            // Draw grid lines for each cell
+            const cellPositions = [
+                { x: rowX, width: col1 },
+                { x: rowX + col1, width: col2 },
+                { x: rowX + col1 + col2, width: col3 },
+                { x: rowX + col1 + col2 + col3, width: col4 },
+                { x: rowX + col1 + col2 + col3 + col4, width: col5 },
+            ];
+            
+            // Draw vertical grid lines
+            doc.save();
+            doc.strokeColor(BORDER).lineWidth(0.5);
+            cellPositions.forEach((cell, idx) => {
+                if (idx > 0) {
+                    // Vertical line between cells
+                    doc.moveTo(cell.x, rowY)
+                        .lineTo(cell.x, rowY + rowH)
+                        .stroke();
+                }
+            });
+            // Right border
+            doc.moveTo(rowX + contentWidth, rowY)
+                .lineTo(rowX + contentWidth, rowY + rowH)
+                .stroke();
+            // Horizontal lines (top and bottom)
+            doc.moveTo(rowX, rowY)
+                .lineTo(rowX + contentWidth, rowY)
+                .stroke();
+            doc.moveTo(rowX, rowY + rowH)
+                .lineTo(rowX + contentWidth, rowY + rowH)
+                .stroke();
+            doc.restore();
+            
+            // Text content
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(date, rowX + 8, rowY + 7, { width: col1 - 16 });
+            doc.text(desc, rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
+            doc.text(category, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16 });
+            doc.text(amount, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16, align: "right" });
+            doc.text(status, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "center" });
+            y += rowH;
+        };
 
         const maxRows = 250;
         const rows = report.expenses.slice(0, maxRows);
         if (!rows.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No expenses to display for the selected period.");
+            doc.font("Helvetica").fontSize(10).fillColor(GRAY);
+            doc.text("No expenses to display for the selected period.", margin, y + 10);
         } else {
-            setFont({ size: 9, color: "#0f172a" });
-            rows.forEach((entry, idx) => {
-                const bottomLimit = doc.page.height - doc.page.margins.bottom - 28;
-                if (doc.y > bottomLimit) {
-                    pdf.addPage();
-                    sectionTitle("Expense Details (continued)");
-                    drawExpenseHeader();
-                }
-
-                const rowStartY = doc.y;
-                if (idx % 2 === 0) {
+            rows.forEach((entry, i) => {
+                const bottomLimit = doc.page.height - doc.page.margins.bottom - 30;
+                if (y > bottomLimit) {
+                    doc.addPage();
+                    
+                    // Add watermark to new page
+                    if (fs.existsSync(logoPath)) {
+                        doc.save();
+                        doc.opacity(0.15);
+                        const logoWidth = 400;
+                        const logoHeight = 230;
+                        const logoX = (pageWidth - logoWidth) / 2;
+                        const logoY = (doc.page.height - logoHeight) / 2;
+                        doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                        doc.restore();
+                        doc.opacity(1);
+                    }
+                    
+                    // Redraw header on new page with grid
+                    y = margin + 40;
+                    const newHeaderY = y;
+                    doc.rect(margin, newHeaderY, contentWidth, rowH).fill(DARK);
+                    
+                    // Draw grid lines for header
                     doc.save();
-                    doc.rect(startX, rowStartY - 2, columnWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
+                    doc.strokeColor("#1f2937").lineWidth(0.5);
+                    headerCellPositions.forEach((cell, idx) => {
+                        if (idx > 0) {
+                            doc.moveTo(cell.x, newHeaderY)
+                                .lineTo(cell.x, newHeaderY + rowH)
+                                .stroke();
+                        }
+                    });
+                    doc.moveTo(margin + contentWidth, newHeaderY)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.moveTo(margin, newHeaderY + rowH)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
                     doc.restore();
+                    
+                    doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+                    doc.text("Date", margin + 8, newHeaderY + 7, { width: col1 - 16 });
+                    doc.text("Description", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
+                    doc.text("Category", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16 });
+                    doc.text("Amount", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16, align: "right" });
+                    doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "center" });
+                    y += rowH;
                 }
 
-                const values = [
+                const description = entry.description || "—";
+                const truncatedDesc = description.length > 35 ? description.substring(0, 32) + "…" : description;
+                const category = entry.category || "Uncategorized";
+                const truncatedCategory = category.length > 20 ? category.substring(0, 17) + "…" : category;
+                
+                drawRow(
                     formatDate(entry.expense_date),
-                    pdfTruncate(entry.description || "—", 32),
-                    pdfTruncate(entry.category || "Uncategorized", 18),
+                    truncatedDesc,
+                    truncatedCategory,
                     formatCurrency(entry.amount),
                     (entry.payment_status || "pending").toUpperCase(),
-                ];
-                values.forEach((val, colIdx) => {
-                    doc.text(val, startX + columnWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                        width: columnWidths[colIdx] - 8,
-                    });
-                });
-                doc.moveDown(0.8);
+                    i % 2 === 0
+                );
             });
 
             if (report.expenses.length > maxRows) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.expenses.length - maxRows} more entries not shown`, startX, doc.y);
+                doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+                doc.text(`+ ${report.expenses.length - maxRows} more entries not shown`, margin, y + 5);
             }
         }
 
-        pdf.finish();
+        doc.end();
     });
 
 const renderJobPdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 50, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
-        const pdf = attachPdfScaffold(doc, { title: "Job Report", range: report.range });
-        const setFont = pdf.setFont;
-        const formatDate = pdfFormatDate;
-        const formatCurrency = pdfFormatCurrency;
 
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        doc.moveDown(0.4);
+        // ═══════════════════════════════════════════════════════════
+        // CONFIGURATION
+        // ═══════════════════════════════════════════════════════════
+        const PRIMARY = "#B91C1C";      // Red for branding
+        const DARK = "#111827";         // Dark text
+        const GRAY = "#6B7280";         // Secondary text
+        const LIGHT = "#F9FAFB";        // Light background
+        const BORDER = "#E5E7EB";       // Borders
+        const margin = 50;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
 
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
+        // Helper functions
+        const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const formatDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
+        const formatPeriodDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
+
+        let y = margin;
+
+        // ═══════════════════════════════════════════════════════════
+        // WATERMARK LOGO (centered, semi-transparent)
+        // ═══════════════════════════════════════════════════════════
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
             doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
+            doc.opacity(0.15);
+            const logoWidth = 400;
+            const logoHeight = 230;
+            const logoX = (pageWidth - logoWidth) / 2;
+            const logoY = (doc.page.height - logoHeight) / 2;
+            doc.image(logoPath, logoX, logoY, { width: logoWidth });
             doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
-        };
-
-        const completed = report.statuses.find((s) => s.status === "Completed");
-        const pending = report.statuses.find((s) => s.status === "Pending");
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Jobs",
-            `${report.totals.jobCount}`,
-            `${completed ? `${completed.count} completed • ` : ""}${report.range.startDate} → ${report.range.endDate}`
-        );
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Revenue (invoiced)",
-            formatCurrency(report.totals.completedRevenue),
-            "Sum of invoices in period"
-        );
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Pending Jobs",
-            pending ? `${pending.count}` : "0",
-            pending ? "Awaiting completion" : "No pending jobs"
-        );
-
-        doc.moveDown(6);
-        const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
-            doc.text(label);
-            doc.moveDown(0.4);
-        };
-
-        // Status table
-        sectionTitle("By Status");
-        if (!report.statuses.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No jobs recorded in this period.");
-        } else {
-            const widths = [200, 80];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            ["Status", "Count"].forEach((title, idx) => {
-                doc.text(title, startX + widths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                    width: widths[idx],
-                });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.statuses.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [row.status, `${row.count}`];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+            doc.opacity(1);
         }
 
-        pdf.addPage();
-        sectionTitle("Job Details");
-        const header = ["Created", "Job", "Customer", "Plate", "Status", "Invoice", "Amount"];
-        const colWidths = [70, 130, 110, 60, 70, 70, 70];
-        const startX = doc.page.margins.left;
-        const drawJobHeader = () => {
-        setFont({ size: 9, bold: true, color: "#475569" });
-        header.forEach((title, idx) => {
-            doc.text(title, startX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: colWidths[idx],
-            });
+        // ═══════════════════════════════════════════════════════════
+        // HEADER - LOGO + COMPANY DETAILS
+        // ═══════════════════════════════════════════════════════════
+        const logoSize = 50;
+        const logoX = margin;
+        
+        // Draw logo on left
+        if (fs.existsSync(logoPath)) {
+            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
+        }
+        
+        // Company details next to logo
+        const textX = margin + logoSize + 15;
+        
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
+        
+        y += logoSize + 10;
+
+        // Divider
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
+        y += 15;
+
+        // ═══════════════════════════════════════════════════════════
+        // REPORT TITLE & INFO
+        // ═══════════════════════════════════════════════════════════
+        doc.font("Helvetica-Bold").fontSize(22).fillColor(DARK);
+        doc.text("JOB SUMMARY REPORT", margin, y);
+
+        // Period and generated date (right)
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        const periodText = `${formatPeriodDate(report.range.startDate)} - ${formatPeriodDate(report.range.endDate)}`;
+        doc.text(`Period: ${periodText}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
+        doc.text(`Generated: ${formatDate(new Date())}`, pageWidth - margin - 180, y + 12, { width: 180, align: "right" });
+
+        y += 40;
+
+        // ═══════════════════════════════════════════════════════════
+        // JOB DETAILS TABLE
+        // ═══════════════════════════════════════════════════════════
+        const tableTop = y;
+        const col1 = 55;    // Created
+        const col2 = 105;   // Job
+        const col3 = 80;    // Customer
+        const col4 = 50;    // Plate
+        const col5 = 50;    // Status
+        const col6 = 50;    // Invoice
+        const col7 = 105; // Amount (needs more space for currency)
+        const rowH = 22;
+
+        // Header with attractive grid
+        const headerY = y;
+        doc.rect(margin, headerY, contentWidth, rowH).fill(DARK);
+        
+        // Draw grid lines for header
+        const headerCellPositions = [
+            { x: margin, width: col1 },
+            { x: margin + col1, width: col2 },
+            { x: margin + col1 + col2, width: col3 },
+            { x: margin + col1 + col2 + col3, width: col4 },
+            { x: margin + col1 + col2 + col3 + col4, width: col5 },
+            { x: margin + col1 + col2 + col3 + col4 + col5, width: col6 },
+            { x: margin + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
+        ];
+        
+        doc.save();
+        doc.strokeColor("#1f2937").lineWidth(0.5);
+        headerCellPositions.forEach((cell, idx) => {
+            if (idx > 0) {
+                doc.moveTo(cell.x, headerY)
+                    .lineTo(cell.x, headerY + rowH)
+                    .stroke();
+            }
         });
-        doc.moveDown(0.3);
-        doc.strokeColor("#e2e8f0")
-            .moveTo(startX, doc.y)
-            .lineTo(startX + colWidths.reduce((a, b) => a + b, 0), doc.y)
+        doc.moveTo(margin + contentWidth, headerY)
+            .lineTo(margin + contentWidth, headerY + rowH)
             .stroke();
-        doc.moveDown(0.2);
-            setFont({ size: 9, color: "#0f172a" });
+        doc.moveTo(margin, headerY + rowH)
+            .lineTo(margin + contentWidth, headerY + rowH)
+            .stroke();
+        doc.restore();
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+        doc.text("Created", margin + 8, headerY + 7, { width: col1 - 16 });
+        doc.text("Job", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
+        doc.text("Customer", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16 });
+        doc.text("Plate", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16 });
+        doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "center" });
+        doc.text("Invoice", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 7, { width: col6 - 16 });
+        doc.text("Amount", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 7, { width: col7 - 16, align: "right" });
+        y += rowH;
+
+        // Rows with attractive grid
+        const drawRow = (created, job, customer, plate, status, invoice, amount, alt) => {
+            const rowX = margin;
+            const rowY = y;
+            
+            // Background color for alternating rows
+            if (alt) {
+                doc.save();
+                doc.rect(rowX, rowY, contentWidth, rowH).fill(LIGHT);
+                doc.restore();
+            }
+            
+            // Draw grid lines for each cell
+            const cellPositions = [
+                { x: rowX, width: col1 },
+                { x: rowX + col1, width: col2 },
+                { x: rowX + col1 + col2, width: col3 },
+                { x: rowX + col1 + col2 + col3, width: col4 },
+                { x: rowX + col1 + col2 + col3 + col4, width: col5 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5, width: col6 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
+            ];
+            
+            // Draw vertical grid lines
+            doc.save();
+            doc.strokeColor(BORDER).lineWidth(0.5);
+            cellPositions.forEach((cell, idx) => {
+                if (idx > 0) {
+                    doc.moveTo(cell.x, rowY)
+                        .lineTo(cell.x, rowY + rowH)
+                        .stroke();
+                }
+            });
+            // Right border
+            doc.moveTo(rowX + contentWidth, rowY)
+                .lineTo(rowX + contentWidth, rowY + rowH)
+                .stroke();
+            // Horizontal lines (top and bottom)
+            doc.moveTo(rowX, rowY)
+                .lineTo(rowX + contentWidth, rowY)
+                .stroke();
+            doc.moveTo(rowX, rowY + rowH)
+                .lineTo(rowX + contentWidth, rowY + rowH)
+                .stroke();
+            doc.restore();
+            
+            // Text content
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(created, rowX + 8, rowY + 7, { width: col1 - 16 });
+            doc.text(job, rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
+            doc.text(customer, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16 });
+            doc.text(plate, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16 });
+            doc.text(status, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "center" });
+            doc.text(invoice, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 7, { width: col6 - 16 });
+            doc.text(amount, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 7, { width: col7 - 16, align: "right" });
+            y += rowH;
         };
 
-        drawJobHeader();
-
-        const rows = report.jobs.slice(0, 250);
+        const maxRows = 250;
+        const rows = report.jobs.slice(0, maxRows);
         if (!rows.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No jobs to display for the selected period.");
+            doc.font("Helvetica").fontSize(10).fillColor(GRAY);
+            doc.text("No jobs to display for the selected period.", margin, y + 10);
         } else {
-            setFont({ size: 9, color: "#0f172a" });
-            rows.forEach((job, idx) => {
-                const bottomLimit = doc.page.height - doc.page.margins.bottom - 28;
-                if (doc.y > bottomLimit) {
-                    pdf.addPage();
-                    sectionTitle("Job Details (continued)");
-                    drawJobHeader();
+            rows.forEach((job, i) => {
+                const bottomLimit = doc.page.height - doc.page.margins.bottom - 30;
+                if (y > bottomLimit) {
+                    doc.addPage();
+                    
+                    // Add watermark to new page
+                    if (fs.existsSync(logoPath)) {
+                        doc.save();
+                        doc.opacity(0.15);
+                        const logoWidth = 400;
+                        const logoHeight = 230;
+                        const logoX = (pageWidth - logoWidth) / 2;
+                        const logoY = (doc.page.height - logoHeight) / 2;
+                        doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                        doc.restore();
+                        doc.opacity(1);
+                    }
+                    
+                    // Redraw header on new page with grid
+                    y = margin + 40;
+                    const newHeaderY = y;
+                    doc.rect(margin, newHeaderY, contentWidth, rowH).fill(DARK);
+                    
+                    // Draw grid lines for header
+                    doc.save();
+                    doc.strokeColor("#1f2937").lineWidth(0.5);
+                    headerCellPositions.forEach((cell, idx) => {
+                        if (idx > 0) {
+                            doc.moveTo(cell.x, newHeaderY)
+                                .lineTo(cell.x, newHeaderY + rowH)
+                                .stroke();
+                        }
+                    });
+                    doc.moveTo(margin + contentWidth, newHeaderY)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.moveTo(margin, newHeaderY + rowH)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.restore();
+                    
+                    doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+                    doc.text("Created", margin + 8, newHeaderY + 7, { width: col1 - 16 });
+                    doc.text("Job", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
+                    doc.text("Customer", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16 });
+                    doc.text("Plate", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16 });
+                    doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "center" });
+                    doc.text("Invoice", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 7, { width: col6 - 16 });
+                    doc.text("Amount", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 7, { width: col7 - 16, align: "right" });
+                    y += rowH;
                 }
 
-                const rowStartY = doc.y;
-                if (idx % 2 === 0) {
-                    doc.save();
-                    doc.rect(startX, rowStartY - 2, colWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                    doc.restore();
-                }
-                const values = [
+                const description = job.description || "—";
+                const truncatedDesc = description.length > 25 ? description.substring(0, 22) + "…" : description;
+                const customer = job.customer_name || "Walk-in";
+                const truncatedCustomer = customer.length > 18 ? customer.substring(0, 15) + "…" : customer;
+                const plate = job.plate || "—";
+                const truncatedPlate = plate.length > 10 ? plate.substring(0, 7) + "…" : plate;
+                const invoice = job.invoice_no || "—";
+                const truncatedInvoice = invoice.length > 12 ? invoice.substring(0, 9) + "…" : invoice;
+                
+                drawRow(
                     formatDate(job.created_at),
-                    pdfTruncate(job.description || "—", 26),
-                    pdfTruncate(job.customer_name || "Walk-in", 18),
-                    pdfTruncate(job.plate || "—", 10),
-                    job.job_status,
-                    pdfTruncate(job.invoice_no || "—", 12),
+                    truncatedDesc,
+                    truncatedCustomer,
+                    truncatedPlate,
+                    job.job_status || "—",
+                    truncatedInvoice,
                     job.final_total ? formatCurrency(job.final_total) : "—",
-                ];
-                values.forEach((val, colIdx) => {
-                    doc.text(val, startX + colWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                        width: colWidths[colIdx] - 8,
-                    });
-                });
-                doc.moveDown(0.8);
+                    i % 2 === 0
+                );
             });
 
-            if (report.jobs.length > rows.length) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.jobs.length - rows.length} more entries not shown`, startX, doc.y);
+            if (report.jobs.length > maxRows) {
+                doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+                doc.text(`+ ${report.jobs.length - maxRows} more entries not shown`, margin, y + 5);
             }
         }
 
-        pdf.finish();
+        doc.end();
     });
 
 const renderInventoryPdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 50, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
-        const pdf = attachPdfScaffold(doc, { title: "Inventory Report", range: report.range });
-        const setFont = pdf.setFont;
 
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        doc.moveDown(0.4);
+        // ═══════════════════════════════════════════════════════════
+        // CONFIGURATION
+        // ═══════════════════════════════════════════════════════════
+        const PRIMARY = "#B91C1C";      // Red for branding
+        const DARK = "#111827";         // Dark text
+        const GRAY = "#6B7280";         // Secondary text
+        const LIGHT = "#F9FAFB";        // Light background
+        const BORDER = "#E5E7EB";       // Borders
+        const margin = 50;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
 
-        const cardWidth = (pageWidth - 12) / 3;
-        const cardHeight = 74;
-        const startY = doc.y;
-        const drawCard = (x, title, value, caption) => {
+        // Helper functions
+        const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const formatDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
+        const formatPeriodDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
+
+        let y = margin;
+
+        // ═══════════════════════════════════════════════════════════
+        // WATERMARK LOGO (centered, semi-transparent)
+        // ═══════════════════════════════════════════════════════════
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
             doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
+            doc.opacity(0.15);
+            const logoWidth = 400;
+            const logoHeight = 230;
+            const logoX = (pageWidth - logoWidth) / 2;
+            const logoY = (doc.page.height - logoHeight) / 2;
+            doc.image(logoPath, logoX, logoY, { width: logoWidth });
             doc.restore();
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text(title, x + 12, startY + 10);
-            setFont({ size: 16, bold: true });
-            doc.text(value, x + 12, startY + 28);
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(caption, x + 12, startY + 48);
-        };
-
-        drawCard(
-            doc.page.margins.left,
-            "Total Items",
-            `${report.totals.itemCount}`,
-            "Tracked inventory records"
-        );
-        drawCard(
-            doc.page.margins.left + cardWidth + 6,
-            "Low Stock",
-            `${report.totals.lowStockCount}`,
-            report.lowStock.length ? "Needs reorder" : "All above reorder level"
-        );
-        drawCard(
-            doc.page.margins.left + (cardWidth + 6) * 2,
-            "Most Used",
-            report.mostUsed[0] ? pdfTruncate(report.mostUsed[0].name, 18) : "No usage",
-            report.mostUsed[0] ? `Used ${report.mostUsed[0].total_used}` : "No usage this period"
-        );
-
-        doc.moveDown(6);
-        const sectionTitle = (label) => {
-            setFont({ size: 12, bold: true });
-            doc.text(label);
-            doc.moveDown(0.4);
-        };
-
-        // Most used
-        sectionTitle("Top Usage");
-        if (!report.mostUsed.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No usage recorded in this period.");
-        } else {
-            const widths = [200, 80, 80];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            ["Item", "Used", "Type"].forEach((title, idx) => {
-                doc.text(title, startX + widths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                    width: widths[idx],
-                });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            report.mostUsed.forEach((row, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
-                doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
-                doc.restore();
-                const values = [pdfTruncate(row.name, 34), `${row.total_used}`, pdfTruncate(row.type, 14)];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
-            });
+            doc.opacity(1);
         }
 
-        pdf.addPage();
-        sectionTitle("Inventory Details");
-        const header = ["Item", "Qty", "Reorder", "Used", "Low"];
-        const colWidths = [180, 60, 70, 70, 50];
-        const startX = doc.page.margins.left;
-        const drawInventoryHeader = () => {
-        setFont({ size: 9, bold: true, color: "#475569" });
-        header.forEach((title, idx) => {
-            doc.text(title, startX + colWidths.slice(0, idx).reduce((a, b) => a + b, 0), doc.y, {
-                width: colWidths[idx],
-            });
+        // ═══════════════════════════════════════════════════════════
+        // HEADER - LOGO + COMPANY DETAILS
+        // ═══════════════════════════════════════════════════════════
+        const logoSize = 50;
+        const logoX = margin;
+        
+        // Draw logo on left
+        if (fs.existsSync(logoPath)) {
+            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
+        }
+        
+        // Company details next to logo
+        const textX = margin + logoSize + 15;
+        
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
+        
+        y += logoSize + 10;
+
+        // Divider
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
+        y += 15;
+
+        // ═══════════════════════════════════════════════════════════
+        // REPORT TITLE & INFO
+        // ═══════════════════════════════════════════════════════════
+        doc.font("Helvetica-Bold").fontSize(22).fillColor(DARK);
+        doc.text("INVENTORY REPORT", margin, y);
+
+        // Period and generated date (right)
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        const periodText = `${formatPeriodDate(report.range.startDate)} - ${formatPeriodDate(report.range.endDate)}`;
+        doc.text(`Period: ${periodText}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
+        doc.text(`Generated: ${formatDate(new Date())}`, pageWidth - margin - 180, y + 12, { width: 180, align: "right" });
+
+        y += 40;
+
+        // ═══════════════════════════════════════════════════════════
+        // INVENTORY DETAILS TABLE
+        // ═══════════════════════════════════════════════════════════
+        const tableTop = y;
+        const col1 = 120;   // Item
+        const col2 = 50;    // Type
+        const col3 = 45;    // Qty
+        const col4 = 50;    // Unit
+        const col5 = 60;    // Unit Cost
+        const col6 = 50;    // Reorder
+        const col7 = 45;    // Used
+        const col8 = 35;    // Low
+        const col9 = 100;   // Notes
+        const rowH = 22;
+
+        // Header with attractive grid
+        const headerY = y;
+        doc.rect(margin, headerY, contentWidth, rowH).fill(DARK);
+        
+        // Draw grid lines for header
+        const headerCellPositions = [
+            { x: margin, width: col1 },
+            { x: margin + col1, width: col2 },
+            { x: margin + col1 + col2, width: col3 },
+            { x: margin + col1 + col2 + col3, width: col4 },
+            { x: margin + col1 + col2 + col3 + col4, width: col5 },
+            { x: margin + col1 + col2 + col3 + col4 + col5, width: col6 },
+            { x: margin + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
+            { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7, width: col8 },
+            { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8, width: col9 },
+        ];
+        
+        doc.save();
+        doc.strokeColor("#1f2937").lineWidth(0.5);
+        headerCellPositions.forEach((cell, idx) => {
+            if (idx > 0) {
+                doc.moveTo(cell.x, headerY)
+                    .lineTo(cell.x, headerY + rowH)
+                    .stroke();
+            }
         });
-        doc.moveDown(0.3);
-        doc.strokeColor("#e2e8f0")
-            .moveTo(startX, doc.y)
-            .lineTo(startX + colWidths.reduce((a, b) => a + b, 0), doc.y)
+        doc.moveTo(margin + contentWidth, headerY)
+            .lineTo(margin + contentWidth, headerY + rowH)
             .stroke();
-        doc.moveDown(0.2);
-            setFont({ size: 9, color: "#0f172a" });
+        doc.moveTo(margin, headerY + rowH)
+            .lineTo(margin + contentWidth, headerY + rowH)
+            .stroke();
+        doc.restore();
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+        doc.text("Item", margin + 8, headerY + 7, { width: col1 - 16 });
+        doc.text("Type", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
+        doc.text("Qty", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16, align: "center" });
+        doc.text("Unit", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16 });
+        doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "right" });
+        doc.text("Reorder", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 7, { width: col6 - 16, align: "center" });
+        doc.text("Used", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 7, { width: col7 - 16, align: "center" });
+        doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, headerY + 7, { width: col8 - 16, align: "center" });
+        doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, headerY + 7, { width: col9 - 16 });
+        y += rowH;
+
+        // Rows with attractive grid
+        const drawRow = (item, type, qty, unit, unitCost, reorder, used, low, notes, alt) => {
+            const rowX = margin;
+            const rowY = y;
+            
+            // Background color for alternating rows
+            if (alt) {
+                doc.save();
+                doc.rect(rowX, rowY, contentWidth, rowH).fill(LIGHT);
+                doc.restore();
+            }
+            
+            // Draw grid lines for each cell
+            const cellPositions = [
+                { x: rowX, width: col1 },
+                { x: rowX + col1, width: col2 },
+                { x: rowX + col1 + col2, width: col3 },
+                { x: rowX + col1 + col2 + col3, width: col4 },
+                { x: rowX + col1 + col2 + col3 + col4, width: col5 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5, width: col6 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7, width: col8 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8, width: col9 },
+            ];
+            
+            // Draw vertical grid lines
+            doc.save();
+            doc.strokeColor(BORDER).lineWidth(0.5);
+            cellPositions.forEach((cell, idx) => {
+                if (idx > 0) {
+                    doc.moveTo(cell.x, rowY)
+                        .lineTo(cell.x, rowY + rowH)
+                        .stroke();
+                }
+            });
+            // Right border
+            doc.moveTo(rowX + contentWidth, rowY)
+                .lineTo(rowX + contentWidth, rowY + rowH)
+                .stroke();
+            // Horizontal lines (top and bottom)
+            doc.moveTo(rowX, rowY)
+                .lineTo(rowX + contentWidth, rowY)
+                .stroke();
+            doc.moveTo(rowX, rowY + rowH)
+                .lineTo(rowX + contentWidth, rowY + rowH)
+                .stroke();
+            doc.restore();
+            
+            // Text content
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(item, rowX + 8, rowY + 7, { width: col1 - 16 });
+            doc.text(type, rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
+            doc.text(qty, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16, align: "center" });
+            doc.text(unit, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16 });
+            doc.text(unitCost, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "right" });
+            doc.text(reorder, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 7, { width: col6 - 16, align: "center" });
+            doc.text(used, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 7, { width: col7 - 16, align: "center" });
+            doc.text(low, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, rowY + 7, { width: col8 - 16, align: "center" });
+            doc.text(notes, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, rowY + 7, { width: col9 - 16 });
+            y += rowH;
         };
 
-        drawInventoryHeader();
-
-        const rows = report.items.slice(0, 300);
+        const maxRows = 300;
+        const rows = report.items.slice(0, maxRows);
         if (!rows.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No inventory records found.");
+            doc.font("Helvetica").fontSize(10).fillColor(GRAY);
+            doc.text("No inventory records found.", margin, y + 10);
         } else {
-            setFont({ size: 9, color: "#0f172a" });
-            rows.forEach((item, idx) => {
-                const bottomLimit = doc.page.height - doc.page.margins.bottom - 28;
-                if (doc.y > bottomLimit) {
-                    pdf.addPage();
-                    sectionTitle("Inventory Details (continued)");
-                    drawInventoryHeader();
+            rows.forEach((item, i) => {
+                const bottomLimit = doc.page.height - doc.page.margins.bottom - 30;
+                if (y > bottomLimit) {
+                    doc.addPage();
+                    
+                    // Add watermark to new page
+                    if (fs.existsSync(logoPath)) {
+                        doc.save();
+                        doc.opacity(0.15);
+                        const logoWidth = 400;
+                        const logoHeight = 230;
+                        const logoX = (pageWidth - logoWidth) / 2;
+                        const logoY = (doc.page.height - logoHeight) / 2;
+                        doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                        doc.restore();
+                        doc.opacity(1);
+                    }
+                    
+                    // Redraw header on new page with grid
+                    y = margin + 40;
+                    const newHeaderY = y;
+                    doc.rect(margin, newHeaderY, contentWidth, rowH).fill(DARK);
+                    
+                    // Draw grid lines for header
+                    doc.save();
+                    doc.strokeColor("#1f2937").lineWidth(0.5);
+                    headerCellPositions.forEach((cell, idx) => {
+                        if (idx > 0) {
+                            doc.moveTo(cell.x, newHeaderY)
+                                .lineTo(cell.x, newHeaderY + rowH)
+                                .stroke();
+                        }
+                    });
+                    doc.moveTo(margin + contentWidth, newHeaderY)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.moveTo(margin, newHeaderY + rowH)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.restore();
+                    
+                    doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+                    doc.text("Item", margin + 8, newHeaderY + 7, { width: col1 - 16 });
+                    doc.text("Type", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
+                    doc.text("Qty", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16, align: "center" });
+                    doc.text("Unit", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16 });
+                    doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "right" });
+                    doc.text("Reorder", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 7, { width: col6 - 16, align: "center" });
+                    doc.text("Used", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 7, { width: col7 - 16, align: "center" });
+                    doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, newHeaderY + 7, { width: col8 - 16, align: "center" });
+                    doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, newHeaderY + 7, { width: col9 - 16 });
+                    y += rowH;
                 }
 
-                const rowStartY = doc.y;
-                if (idx % 2 === 0) {
-                    doc.save();
-                    doc.rect(startX, rowStartY - 2, colWidths.reduce((a, b) => a + b, 0), 18).fill("#f8fafc");
-                    doc.restore();
-                }
-                const values = [
-                    pdfTruncate(item.name, 40),
+                const itemName = item.name || "—";
+                const truncatedItem = itemName.length > 25 ? itemName.substring(0, 22) + "…" : itemName;
+                const itemType = item.type || "—";
+                const truncatedType = itemType.length > 10 ? itemType.substring(0, 7) + "…" : itemType;
+                const unit = item.unit || "—";
+                const truncatedUnit = unit.length > 10 ? unit.substring(0, 7) + "…" : unit;
+                const unitCost = item.unit_cost ? formatCurrency(item.unit_cost) : "—";
+                const reorder = item.reorder_level ?? "—";
+                const used = `${item.total_used}`;
+                const low = item.low_stock ? "Yes" : "No";
+                const notes = item.description || "—";
+                const truncatedNotes = notes.length > 20 ? notes.substring(0, 17) + "…" : notes;
+                
+                drawRow(
+                    truncatedItem,
+                    truncatedType,
                     `${item.quantity}`,
-                    `${item.reorder_level}`,
-                    `${item.total_used}`,
-                    item.low_stock ? "Yes" : "No",
-                ];
-                values.forEach((val, colIdx) => {
-                    doc.text(val, startX + colWidths.slice(0, colIdx).reduce((a, b) => a + b, 0) + 4, rowStartY, {
-                        width: colWidths[colIdx] - 8,
-                    });
-                });
-                doc.moveDown(0.8);
+                    truncatedUnit,
+                    unitCost,
+                    `${reorder}`,
+                    used,
+                    low,
+                    truncatedNotes,
+                    i % 2 === 0
+                );
             });
 
-            if (report.items.length > rows.length) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.items.length - rows.length} more entries not shown`, startX, doc.y);
+            if (report.items.length > maxRows) {
+                doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+                doc.text(`+ ${report.items.length - maxRows} more entries not shown`, margin, y + 5);
             }
         }
 
-        pdf.finish();
+        doc.end();
     });
 
 
@@ -998,26 +1562,14 @@ const renderInventoryPdf = (report) =>
 const renderExpenseExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
     const CURRENCY_FMT = '"LKR "#,##0.00';
+    setWorkbookMeta(workbook);
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
+    addSheetBanner(summarySheet, { reportTitle: "EXPENSE REPORT • SUMMARY", range: report.range, columnCount: 3 });
     
-    // Title
-    const titleRow = summarySheet.getRow(1);
-    titleRow.getCell(1).value = "Expense Report Summary";
-    titleRow.getCell(1).font = { size: 16, bold: true, color: { argb: "FFFFFFFF" } };
-    titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-    titleRow.height = 25;
-    summarySheet.mergeCells("A1:C1");
-    
-    // Period info
-    summarySheet.getRow(3).getCell(1).value = "Period:";
-    summarySheet.getRow(3).getCell(2).value = `${report.range.startDate} to ${report.range.endDate}`;
-    summarySheet.getRow(4).getCell(1).value = "Generated:";
-    summarySheet.getRow(4).getCell(2).value = new Date().toISOString().slice(0, 10);
-    
-    // Totals section
-    let row = 6;
+    // Totals section (starts after banner)
+    let row = 5;
     summarySheet.getRow(row).getCell(1).value = "Total Expenses";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
     summarySheet.getRow(row).getCell(2).value = report.totals.totalAmount;
@@ -1052,7 +1604,7 @@ const renderExpenseExcel = async (report) => {
         dataRow.getCell(3).value = cat.total;
         dataRow.getCell(3).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
-            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
     
@@ -1079,7 +1631,7 @@ const renderExpenseExcel = async (report) => {
         dataRow.getCell(3).value = stat.total || 0;
         dataRow.getCell(3).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
-            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
     
@@ -1087,32 +1639,34 @@ const renderExpenseExcel = async (report) => {
     summarySheet.getColumn(1).width = 25;
     summarySheet.getColumn(2).width = 15;
     summarySheet.getColumn(3).width = 18;
+    setPrintSetup(summarySheet, { landscape: false });
+    applyTableBorders(summarySheet);
     
     // Details Sheet (match Expense PDF table)
     const detailsSheet = workbook.addWorksheet("Expense Details");
     const pdfHeaders = ["Date", "Description", "Category", "Amount", "Status"];
-    const headerRow = detailsSheet.getRow(1);
-    pdfHeaders.forEach((header, idx) => {
-        const cell = headerRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    headerRow.height = 20;
+    addSheetBanner(detailsSheet, { reportTitle: "EXPENSE REPORT", range: report.range, columnCount: pdfHeaders.length });
+    const headerRow = detailsSheet.getRow(4);
+    pdfHeaders.forEach((header, idx) => (headerRow.getCell(idx + 1).value = header));
+    styleHeaderRow(headerRow, pdfHeaders.length);
+    applySheetChrome(detailsSheet, { headerRow: 4, headerColumnCount: pdfHeaders.length, freezeRow: 4 });
+    setPrintSetup(detailsSheet, { landscape: true });
 
     report.expenses.forEach((exp, idx) => {
-        const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = exp.expense_date ? new Date(exp.expense_date) : null;
-        row.getCell(1).numFmt = "mm/dd/yyyy";
+        const row = detailsSheet.getRow(idx + 5);
+        row.getCell(1).value = exp.expense_date ? asExcelLocalDate(exp.expense_date) : null;
+        row.getCell(1).numFmt = "dd/mm/yyyy";
         row.getCell(2).value = exp.description || "—";
+        row.getCell(2).alignment = { wrapText: true, vertical: "top" };
         row.getCell(3).value = exp.category || "Uncategorized";
         row.getCell(4).value = exp.amount || 0;
         row.getCell(4).numFmt = CURRENCY_FMT;
-        row.getCell(5).value = (exp.payment_status || "pending").toUpperCase();
+        const statusText = (exp.payment_status || "pending").toUpperCase();
+        row.getCell(5).value = statusText;
+        statusChip(row.getCell(5), exp.payment_status || "pending");
 
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
@@ -1121,60 +1675,71 @@ const renderExpenseExcel = async (report) => {
     detailsSheet.getColumn(3).width = 20;
     detailsSheet.getColumn(4).width = 14;
     detailsSheet.getColumn(5).width = 12;
+    addTotalsRow(detailsSheet, {
+        labelColumn: 3,
+        valueColumn: 4,
+        startRow: 5,
+        endRow: report.expenses.length + 4,
+        currency: true,
+    });
 
     // Raw sheet (all fields)
     const rawSheet = workbook.addWorksheet("Expense Raw");
-    const rawHeaders = ["ID", "Date", "Description", "Category", "Amount", "Payment Status", "Payment Method", "Remarks"];
-    const rawHeaderRow = rawSheet.getRow(1);
-    rawHeaders.forEach((header, idx) => {
-        const cell = rawHeaderRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    rawHeaderRow.height = 20;
+    const rawHeaders = [
+        "ID",
+        "Expense Date",
+        "Created At",
+        "Description",
+        "Category",
+        "Amount",
+        "Payment Status",
+        "Payment Method",
+        "Remarks",
+    ];
+    addSheetBanner(rawSheet, { reportTitle: "EXPENSE REPORT (RAW)", range: report.range, columnCount: rawHeaders.length });
+    const rawHeaderRow = rawSheet.getRow(4);
+    rawHeaders.forEach((header, idx) => (rawHeaderRow.getCell(idx + 1).value = header));
+    styleHeaderRow(rawHeaderRow, rawHeaders.length);
+    applySheetChrome(rawSheet, { headerRow: 4, headerColumnCount: rawHeaders.length, freezeRow: 4 });
+    setPrintSetup(rawSheet, { landscape: true });
 
     report.expenses.forEach((exp, idx) => {
-        const row = rawSheet.getRow(idx + 2);
+        const row = rawSheet.getRow(idx + 5);
         row.getCell(1).value = exp.id;
-        row.getCell(2).value = exp.expense_date ? new Date(exp.expense_date) : null;
-        row.getCell(2).numFmt = "mm/dd/yyyy";
-        row.getCell(3).value = exp.description || "";
-        row.getCell(4).value = exp.category || "Uncategorized";
-        row.getCell(5).value = exp.amount || 0;
-        row.getCell(5).numFmt = CURRENCY_FMT;
-        row.getCell(6).value = exp.payment_status || "";
-        row.getCell(7).value = exp.payment_method || "";
-        row.getCell(8).value = exp.remarks || "";
+        row.getCell(2).value = exp.expense_date ? asExcelLocalDate(exp.expense_date) : null;
+        row.getCell(2).numFmt = "dd/mm/yyyy";
+        row.getCell(3).value = exp.created_at ? asExcelLocalDate(exp.created_at) : null;
+        row.getCell(3).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(4).value = exp.description || "";
+        row.getCell(4).alignment = { wrapText: true, vertical: "top" };
+        row.getCell(5).value = exp.category || "Uncategorized";
+        row.getCell(6).value = exp.amount || 0;
+        row.getCell(6).numFmt = CURRENCY_FMT;
+        row.getCell(7).value = exp.payment_status || "";
+        row.getCell(8).value = exp.payment_method || "";
+        row.getCell(9).value = exp.remarks || "";
+        row.getCell(9).alignment = { wrapText: true, vertical: "top" };
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
     rawSheet.getColumn(1).width = 8;
-    rawSheet.getColumn(2).width = 12;
-    rawSheet.getColumn(3).width = 36;
-    rawSheet.getColumn(4).width = 20;
-    rawSheet.getColumn(5).width = 14;
-    rawSheet.getColumn(6).width = 16;
-    rawSheet.getColumn(7).width = 18;
-    rawSheet.getColumn(8).width = 30;
+    rawSheet.getColumn(2).width = 14;
+    rawSheet.getColumn(3).width = 18;
+    rawSheet.getColumn(4).width = 36;
+    rawSheet.getColumn(5).width = 20;
+    rawSheet.getColumn(6).width = 14;
+    rawSheet.getColumn(7).width = 16;
+    rawSheet.getColumn(8).width = 18;
+    rawSheet.getColumn(9).width = 30;
     
     // Add borders
-    [summarySheet, detailsSheet, rawSheet].forEach(sheet => {
-        sheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => {
-                cell.border = {
-                    top: { style: "thin" },
-                    left: { style: "thin" },
-                    bottom: { style: "thin" },
-                    right: { style: "thin" },
-                };
-            });
-        });
-    });
+    [summarySheet, detailsSheet, rawSheet].forEach(applyTableBorders);
     
+    // Open the workbook on the full-detail sheet (so it's not "only summary" when opened)
+    workbook.views = [{ activeTab: 1 }];
+
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
 };
@@ -1182,26 +1747,14 @@ const renderExpenseExcel = async (report) => {
 const renderJobExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
     const CURRENCY_FMT = '"LKR "#,##0.00';
+    setWorkbookMeta(workbook);
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
+    addSheetBanner(summarySheet, { reportTitle: "JOB SUMMARY REPORT • SUMMARY", range: report.range, columnCount: 2 });
     
-    // Title
-    const titleRow = summarySheet.getRow(1);
-    titleRow.getCell(1).value = "Job Report Summary";
-    titleRow.getCell(1).font = { size: 16, bold: true, color: { argb: "FFFFFFFF" } };
-    titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-    titleRow.height = 25;
-    summarySheet.mergeCells("A1:C1");
-    
-    // Period info
-    summarySheet.getRow(3).getCell(1).value = "Period:";
-    summarySheet.getRow(3).getCell(2).value = `${report.range.startDate} to ${report.range.endDate}`;
-    summarySheet.getRow(4).getCell(1).value = "Generated:";
-    summarySheet.getRow(4).getCell(2).value = new Date().toISOString().slice(0, 10);
-    
-    // Totals section
-    let row = 6;
+    // Totals section (starts after banner)
+    let row = 5;
     summarySheet.getRow(row).getCell(1).value = "Total Jobs";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
     summarySheet.getRow(row).getCell(2).value = report.totals.jobCount;
@@ -1234,134 +1787,153 @@ const renderJobExcel = async (report) => {
         dataRow.getCell(1).value = stat.status;
         dataRow.getCell(2).value = stat.count;
         if (idx % 2 === 0) {
-            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
     
     // Set column widths
     summarySheet.getColumn(1).width = 25;
     summarySheet.getColumn(2).width = 15;
+    setPrintSetup(summarySheet, { landscape: false });
+    applyTableBorders(summarySheet);
     
-    // Details Sheet (match Job PDF table: Created, Job, Customer, Plate, Status, Invoice, Amount)
+    // Details Sheet (Job PDF columns + key dates)
     const detailsSheet = workbook.addWorksheet("Job Details");
-    const pdfHeaders = ["Created", "Job", "Customer", "Plate", "Status", "Invoice", "Amount"];
-    const headerRow = detailsSheet.getRow(1);
-    pdfHeaders.forEach((header, idx) => {
-        const cell = headerRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    headerRow.height = 20;
+    const pdfHeaders = ["Created", "Updated", "Status Changed", "Invoice Date", "Job", "Customer", "Plate", "Status", "Invoice", "Amount"];
+    addSheetBanner(detailsSheet, { reportTitle: "JOB SUMMARY REPORT", range: report.range, columnCount: pdfHeaders.length });
+    const headerRow = detailsSheet.getRow(4);
+    pdfHeaders.forEach((h, idx) => (headerRow.getCell(idx + 1).value = h));
+    styleHeaderRow(headerRow, pdfHeaders.length);
+    applySheetChrome(detailsSheet, { headerRow: 4, headerColumnCount: pdfHeaders.length, freezeRow: 4 });
+    setPrintSetup(detailsSheet, { landscape: true });
 
     report.jobs.forEach((job, idx) => {
-        const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = job.created_at ? new Date(job.created_at) : null;
-        row.getCell(1).numFmt = "mm/dd/yyyy";
-        row.getCell(2).value = job.description || "—";
-        row.getCell(3).value = job.customer_name || "Walk-in";
-        row.getCell(4).value = job.plate || "—";
-        row.getCell(5).value = job.job_status || "";
-        row.getCell(6).value = job.invoice_no || "—";
-        row.getCell(7).value = job.final_total || 0;
-        row.getCell(7).numFmt = CURRENCY_FMT;
+        const row = detailsSheet.getRow(idx + 5);
+        row.getCell(1).value = job.created_at ? asExcelLocalDate(job.created_at) : null;
+        row.getCell(1).numFmt = "dd/mm/yyyy";
+        row.getCell(2).value = job.updated_at ? asExcelLocalDate(job.updated_at) : null;
+        row.getCell(2).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(3).value = job.status_changed_at ? asExcelLocalDate(job.status_changed_at) : null;
+        row.getCell(3).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(4).value = job.invoice_date ? asExcelLocalDate(job.invoice_date) : null;
+        row.getCell(4).numFmt = "dd/mm/yyyy";
+        row.getCell(5).value = job.description || "—";
+        row.getCell(5).alignment = { wrapText: true, vertical: "top" };
+        row.getCell(6).value = job.customer_name || "Walk-in";
+        row.getCell(7).value = job.plate || "—";
+        row.getCell(8).value = job.job_status || "";
+        statusChip(row.getCell(8), job.job_status || "");
+        row.getCell(9).value = job.invoice_no || "—";
+        row.getCell(10).value = job.final_total || 0;
+        row.getCell(10).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
     detailsSheet.getColumn(1).width = 12;
-    detailsSheet.getColumn(2).width = 40;
-    detailsSheet.getColumn(3).width = 22;
+    detailsSheet.getColumn(2).width = 18;
+    detailsSheet.getColumn(3).width = 18;
     detailsSheet.getColumn(4).width = 12;
-    detailsSheet.getColumn(5).width = 12;
-    detailsSheet.getColumn(6).width = 16;
-    detailsSheet.getColumn(7).width = 14;
+    detailsSheet.getColumn(5).width = 40;
+    detailsSheet.getColumn(6).width = 22;
+    detailsSheet.getColumn(7).width = 12;
+    detailsSheet.getColumn(8).width = 12;
+    detailsSheet.getColumn(9).width = 16;
+    detailsSheet.getColumn(10).width = 14;
+    addTotalsRow(detailsSheet, {
+        labelColumn: 9,
+        valueColumn: 10,
+        startRow: 5,
+        endRow: report.jobs.length + 4,
+        currency: true,
+    });
 
     // Raw sheet (keep all useful fields)
     const rawSheet = workbook.addWorksheet("Job Raw");
-    const rawHeaders = ["ID", "Created", "Description", "Category", "Customer", "Plate", "Status", "Invoice No", "Invoice Status", "Amount"];
-    const rawHeaderRow = rawSheet.getRow(1);
-    rawHeaders.forEach((header, idx) => {
-        const cell = rawHeaderRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    rawHeaderRow.height = 20;
+    const rawHeaders = [
+        "ID",
+        "Created",
+        "Updated",
+        "Status Changed",
+        "Description",
+        "Category",
+        "Customer",
+        "Plate",
+        "Status",
+        "Invoice Date",
+        "Invoice No",
+        "Invoice Status",
+        "Amount",
+    ];
+    addSheetBanner(rawSheet, { reportTitle: "JOB SUMMARY REPORT (RAW)", range: report.range, columnCount: rawHeaders.length });
+    const rawHeaderRow = rawSheet.getRow(4);
+    rawHeaders.forEach((h, idx) => (rawHeaderRow.getCell(idx + 1).value = h));
+    styleHeaderRow(rawHeaderRow, rawHeaders.length);
+    applySheetChrome(rawSheet, { headerRow: 4, headerColumnCount: rawHeaders.length, freezeRow: 4 });
+    setPrintSetup(rawSheet, { landscape: true });
 
     report.jobs.forEach((job, idx) => {
-        const row = rawSheet.getRow(idx + 2);
+        const row = rawSheet.getRow(idx + 5);
         row.getCell(1).value = job.id;
-        row.getCell(2).value = job.created_at ? new Date(job.created_at) : null;
-        row.getCell(2).numFmt = "mm/dd/yyyy";
-        row.getCell(3).value = job.description || "";
-        row.getCell(4).value = job.category || "";
-        row.getCell(5).value = job.customer_name || "";
-        row.getCell(6).value = job.plate || "";
-        row.getCell(7).value = job.job_status || "";
-        row.getCell(8).value = job.invoice_no || "";
-        row.getCell(9).value = job.payment_status || "";
-        row.getCell(10).value = job.final_total || 0;
-        row.getCell(10).numFmt = CURRENCY_FMT;
+        row.getCell(2).value = job.created_at ? asExcelLocalDate(job.created_at) : null;
+        row.getCell(2).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(3).value = job.updated_at ? asExcelLocalDate(job.updated_at) : null;
+        row.getCell(3).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(4).value = job.status_changed_at ? asExcelLocalDate(job.status_changed_at) : null;
+        row.getCell(4).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(5).value = job.description || "";
+        row.getCell(5).alignment = { wrapText: true, vertical: "top" };
+        row.getCell(6).value = job.category || "";
+        row.getCell(7).value = job.customer_name || "";
+        row.getCell(8).value = job.plate || "";
+        row.getCell(9).value = job.job_status || "";
+        row.getCell(10).value = job.invoice_date ? asExcelLocalDate(job.invoice_date) : null;
+        row.getCell(10).numFmt = "dd/mm/yyyy";
+        row.getCell(11).value = job.invoice_no || "";
+        row.getCell(12).value = job.payment_status || "";
+        statusChip(row.getCell(12), job.payment_status || "");
+        row.getCell(13).value = job.final_total || 0;
+        row.getCell(13).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
     rawSheet.getColumn(1).width = 8;
-    rawSheet.getColumn(2).width = 12;
-    rawSheet.getColumn(3).width = 40;
+    rawSheet.getColumn(2).width = 18;
+    rawSheet.getColumn(3).width = 18;
     rawSheet.getColumn(4).width = 18;
-    rawSheet.getColumn(5).width = 22;
-    rawSheet.getColumn(6).width = 12;
-    rawSheet.getColumn(7).width = 12;
-    rawSheet.getColumn(8).width = 16;
-    rawSheet.getColumn(9).width = 14;
-    rawSheet.getColumn(10).width = 14;
+    rawSheet.getColumn(5).width = 40;
+    rawSheet.getColumn(6).width = 18;
+    rawSheet.getColumn(7).width = 22;
+    rawSheet.getColumn(8).width = 12;
+    rawSheet.getColumn(9).width = 12;
+    rawSheet.getColumn(10).width = 12;
+    rawSheet.getColumn(11).width = 16;
+    rawSheet.getColumn(12).width = 14;
+    rawSheet.getColumn(13).width = 14;
     
     // Add borders
-    [summarySheet, detailsSheet, rawSheet].forEach(sheet => {
-        sheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => {
-                cell.border = {
-                    top: { style: "thin" },
-                    left: { style: "thin" },
-                    bottom: { style: "thin" },
-                    right: { style: "thin" },
-                };
-            });
-        });
-    });
+    [summarySheet, detailsSheet, rawSheet].forEach(applyTableBorders);
     
+    // Open the workbook on the full-detail sheet (so it's not "only summary" when opened)
+    workbook.views = [{ activeTab: 1 }];
+
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
 };
 
 const renderInventoryExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
+    setWorkbookMeta(workbook);
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
+    addSheetBanner(summarySheet, { reportTitle: "INVENTORY REPORT • SUMMARY", range: report.range, columnCount: 5 });
     
-    // Title
-    const titleRow = summarySheet.getRow(1);
-    titleRow.getCell(1).value = "Inventory Report Summary";
-    titleRow.getCell(1).font = { size: 16, bold: true, color: { argb: "FFFFFFFF" } };
-    titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-    titleRow.height = 25;
-    summarySheet.mergeCells("A1:E1");
-    
-    // Period info
-    summarySheet.getRow(3).getCell(1).value = "Period:";
-    summarySheet.getRow(3).getCell(2).value = `${report.range.startDate} to ${report.range.endDate}`;
-    summarySheet.getRow(4).getCell(1).value = "Generated:";
-    summarySheet.getRow(4).getCell(2).value = new Date().toISOString().slice(0, 10);
-    
-    // Totals section
-    let row = 6;
+    // Totals section (starts after banner)
+    let row = 5;
     summarySheet.getRow(row).getCell(1).value = "Total Items";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
     summarySheet.getRow(row).getCell(2).value = report.totals.itemCount;
@@ -1402,7 +1974,7 @@ const renderInventoryExcel = async (report) => {
             dataRow.getCell(5).font = { color: { argb: "FFFF0000" }, bold: true };
         }
         if (idx % 2 === 0) {
-            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
     
@@ -1412,68 +1984,115 @@ const renderInventoryExcel = async (report) => {
     summarySheet.getColumn(3).width = 12;
     summarySheet.getColumn(4).width = 12;
     summarySheet.getColumn(5).width = 15;
+    setPrintSetup(summarySheet, { landscape: false });
+    applyTableBorders(summarySheet);
     
-    // Details Sheet (match Inventory PDF table: Item, Qty, Reorder, Used, Low)
+    // Details Sheet (match Inventory PDF table: Item, Type, Qty, Unit, Unit Cost, Reorder, Used, Low, Notes)
     const detailsSheet = workbook.addWorksheet("Inventory Details");
-    const pdfHeaders = ["Item", "Qty", "Reorder", "Used", "Low"];
-    const headerRow = detailsSheet.getRow(1);
-    pdfHeaders.forEach((header, idx) => {
-        const cell = headerRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    headerRow.height = 20;
+    const pdfHeaders = [
+        "Item",
+        "Type",
+        "Qty",
+        "Unit",
+        "Unit Cost",
+        "Reorder",
+        "Low",
+        "Notes",
+        "Created",
+        "Updated",
+    ];
+    addSheetBanner(detailsSheet, { reportTitle: "INVENTORY REPORT", range: report.range, columnCount: pdfHeaders.length });
+    const headerRow = detailsSheet.getRow(4);
+    pdfHeaders.forEach((h, idx) => (headerRow.getCell(idx + 1).value = h));
+    styleHeaderRow(headerRow, pdfHeaders.length);
+    applySheetChrome(detailsSheet, { headerRow: 4, headerColumnCount: pdfHeaders.length, freezeRow: 4 });
+    setPrintSetup(detailsSheet, { landscape: true });
 
     report.items.forEach((item, idx) => {
-        const row = detailsSheet.getRow(idx + 2);
+        const row = detailsSheet.getRow(idx + 5);
         row.getCell(1).value = item.name || "";
-        row.getCell(2).value = item.quantity ?? 0;
-        row.getCell(3).value = item.reorder_level ?? 0;
-        row.getCell(4).value = item.total_used ?? 0;
-        row.getCell(5).value = item.low_stock ? "Yes" : "No";
-        if (item.low_stock) {
-            row.getCell(5).font = { color: { argb: "FFFF0000" }, bold: true };
+        row.getCell(2).value = item.type || "";
+        row.getCell(3).value = item.quantity ?? 0;
+        row.getCell(4).value = item.unit || "";
+        row.getCell(5).value = item.unit_cost ?? null;
+        // If unit_cost exists, apply currency format
+        if (item.unit_cost !== null && item.unit_cost !== undefined && item.unit_cost !== "") {
+            row.getCell(5).numFmt = '"LKR "#,##0.00';
         }
-        if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
-        }
-    });
-
-    detailsSheet.getColumn(1).width = 34;
-    detailsSheet.getColumn(2).width = 12;
-    detailsSheet.getColumn(3).width = 12;
-    detailsSheet.getColumn(4).width = 12;
-    detailsSheet.getColumn(5).width = 10;
-
-    // Raw sheet (all fields)
-    const rawSheet = workbook.addWorksheet("Inventory Raw");
-    const rawHeaders = ["ID", "Name", "Type", "Quantity", "Reorder Level", "Used", "Low Stock"];
-    const rawHeaderRow = rawSheet.getRow(1);
-    rawHeaders.forEach((header, idx) => {
-        const cell = rawHeaderRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    rawHeaderRow.height = 20;
-
-    report.items.forEach((item, idx) => {
-        const row = rawSheet.getRow(idx + 2);
-        row.getCell(1).value = item.id;
-        row.getCell(2).value = item.name || "";
-        row.getCell(3).value = item.type || "";
-        row.getCell(4).value = item.quantity ?? 0;
-        row.getCell(5).value = item.reorder_level ?? 0;
-        row.getCell(6).value = item.total_used ?? 0;
+        row.getCell(6).value = item.reorder_level ?? 0;
         row.getCell(7).value = item.low_stock ? "Yes" : "No";
+        statusChip(row.getCell(7), item.low_stock ? "unpaid" : "paid"); // red/green chip
+        row.getCell(8).value = item.description || "";
+        row.getCell(8).alignment = { wrapText: true, vertical: "top" };
+        row.getCell(9).value = item.created_at ? asExcelLocalDate(item.created_at) : null;
+        row.getCell(9).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(10).value = item.updated_at ? asExcelLocalDate(item.updated_at) : null;
+        row.getCell(10).numFmt = "dd/mm/yyyy h:mm AM/PM";
         if (item.low_stock) {
             row.getCell(7).font = { color: { argb: "FFFF0000" }, bold: true };
         }
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
+        }
+    });
+
+    detailsSheet.getColumn(1).width = 34;
+    detailsSheet.getColumn(2).width = 16;
+    detailsSheet.getColumn(3).width = 10;
+    detailsSheet.getColumn(4).width = 12;
+    detailsSheet.getColumn(5).width = 14;
+    detailsSheet.getColumn(6).width = 12;
+    detailsSheet.getColumn(7).width = 10;
+    detailsSheet.getColumn(8).width = 30;
+    detailsSheet.getColumn(9).width = 18;
+    detailsSheet.getColumn(10).width = 18;
+
+    // Raw sheet (all fields)
+    const rawSheet = workbook.addWorksheet("Inventory Raw");
+    const rawHeaders = [
+        "ID",
+        "Name",
+        "Type",
+        "Unit",
+        "Unit Cost",
+        "Description",
+        "Quantity",
+        "Reorder Level",
+        "Low Stock",
+        "Created At",
+        "Updated At",
+    ];
+    addSheetBanner(rawSheet, { reportTitle: "INVENTORY REPORT (RAW)", range: report.range, columnCount: rawHeaders.length });
+    const rawHeaderRow = rawSheet.getRow(4);
+    rawHeaders.forEach((h, idx) => (rawHeaderRow.getCell(idx + 1).value = h));
+    styleHeaderRow(rawHeaderRow, rawHeaders.length);
+    applySheetChrome(rawSheet, { headerRow: 4, headerColumnCount: rawHeaders.length, freezeRow: 4 });
+    setPrintSetup(rawSheet, { landscape: true });
+
+    report.items.forEach((item, idx) => {
+        const row = rawSheet.getRow(idx + 5);
+        row.getCell(1).value = item.id;
+        row.getCell(2).value = item.name || "";
+        row.getCell(3).value = item.type || "";
+        row.getCell(4).value = item.unit || "";
+        row.getCell(5).value = item.unit_cost ?? null;
+        if (item.unit_cost !== null && item.unit_cost !== undefined && item.unit_cost !== "") {
+            row.getCell(5).numFmt = '"LKR "#,##0.00';
+        }
+        row.getCell(6).value = item.description || "";
+        row.getCell(7).value = item.quantity ?? 0;
+        row.getCell(8).value = item.reorder_level ?? 0;
+        row.getCell(9).value = item.low_stock ? "Yes" : "No";
+        statusChip(row.getCell(9), item.low_stock ? "unpaid" : "paid");
+        row.getCell(10).value = item.created_at ? asExcelLocalDate(item.created_at) : null;
+        row.getCell(10).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        row.getCell(11).value = item.updated_at ? asExcelLocalDate(item.updated_at) : null;
+        row.getCell(11).numFmt = "dd/mm/yyyy h:mm AM/PM";
+        if (item.low_stock) {
+            row.getCell(9).font = { color: { argb: "FFFF0000" }, bold: true };
+        }
+        if (idx % 2 === 0) {
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
@@ -1482,23 +2101,19 @@ const renderInventoryExcel = async (report) => {
     rawSheet.getColumn(3).width = 16;
     rawSheet.getColumn(4).width = 12;
     rawSheet.getColumn(5).width = 14;
-    rawSheet.getColumn(6).width = 12;
+    rawSheet.getColumn(6).width = 30;
     rawSheet.getColumn(7).width = 12;
+    rawSheet.getColumn(8).width = 14;
+    rawSheet.getColumn(9).width = 12;
+    rawSheet.getColumn(10).width = 18;
+    rawSheet.getColumn(11).width = 18;
     
     // Add borders
-    [summarySheet, detailsSheet, rawSheet].forEach(sheet => {
-        sheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => {
-                cell.border = {
-                    top: { style: "thin" },
-                    left: { style: "thin" },
-                    bottom: { style: "thin" },
-                    right: { style: "thin" },
-                };
-            });
-        });
-    });
+    [summarySheet, detailsSheet, rawSheet].forEach(applyTableBorders);
     
+    // Open the workbook on the full-detail sheet (so it's not "only summary" when opened)
+    workbook.views = [{ activeTab: 1 }];
+
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
 };
@@ -1506,24 +2121,13 @@ const renderInventoryExcel = async (report) => {
 const renderRevenueExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
     const CURRENCY_FMT = '"LKR "#,##0.00';
+    setWorkbookMeta(workbook);
     
     // Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
+    addSheetBanner(summarySheet, { reportTitle: "REVENUE REPORT • SUMMARY", range: report.range, columnCount: 3 });
     
-    // Title
-    const titleRow = summarySheet.getRow(1);
-    titleRow.getCell(1).value = "Revenue Report Summary";
-    titleRow.getCell(1).font = { size: 16, bold: true, color: { argb: "FFFFFFFF" } };
-    titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-    titleRow.height = 25;
-    summarySheet.mergeCells("A1:C1");
-    
-    // Period info
-    summarySheet.getRow(3).getCell(1).value = "Period:";
-    summarySheet.getRow(3).getCell(2).value = `${report.range.startDate} to ${report.range.endDate}`;
-    summarySheet.getRow(4).getCell(1).value = "Generated:";
-    summarySheet.getRow(4).getCell(2).value = new Date().toISOString().slice(0, 10);
-    
+    // (Banner already includes Period + Generated)
     // Totals section (match the PDF: Net Revenue, Invoices Total, Expenses Total)
     const invoicesTotal =
         report?.totals?.invoicesTotal ?? report?.totals?.totalRevenue ?? 0;
@@ -1533,7 +2137,7 @@ const renderRevenueExcel = async (report) => {
     const invoiceCount =
         report?.totals?.invoiceCount ?? (Array.isArray(report?.invoices) ? report.invoices.length : 0);
 
-    let row = 6;
+    let row = 5;
     summarySheet.getRow(row).getCell(1).value = "Net Revenue";
     summarySheet.getRow(row).getCell(1).font = { bold: true };
     summarySheet.getRow(row).getCell(2).value = netRevenue;
@@ -1580,7 +2184,7 @@ const renderRevenueExcel = async (report) => {
         dataRow.getCell(3).value = stat.total || 0;
         dataRow.getCell(3).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
-            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            dataRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
     
@@ -1588,34 +2192,41 @@ const renderRevenueExcel = async (report) => {
     summarySheet.getColumn(1).width = 25;
     summarySheet.getColumn(2).width = 18;
     summarySheet.getColumn(3).width = 18;
+    setPrintSetup(summarySheet, { landscape: false });
+    applyTableBorders(summarySheet);
     
     // Details Sheet: Invoices (match Revenue PDF table: Date, Invoice No, Customer, Amount, Status)
     const detailsSheet = workbook.addWorksheet("Invoices");
     
     const detailHeaders = ["Date", "Invoice No", "Customer", "Amount", "Status"];
-    const headerRow = detailsSheet.getRow(1);
-    detailHeaders.forEach((header, idx) => {
-        const cell = headerRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    headerRow.height = 20;
+    addSheetBanner(detailsSheet, { reportTitle: "REVENUE REPORT • INVOICES", range: report.range, columnCount: detailHeaders.length });
+    const headerRow = detailsSheet.getRow(4);
+    detailHeaders.forEach((h, idx) => (headerRow.getCell(idx + 1).value = h));
+    styleHeaderRow(headerRow, detailHeaders.length);
+    applySheetChrome(detailsSheet, { headerRow: 4, headerColumnCount: detailHeaders.length, freezeRow: 4 });
+    setPrintSetup(detailsSheet, { landscape: true });
     
     report.invoices.forEach((inv, idx) => {
-        const row = detailsSheet.getRow(idx + 2);
-        row.getCell(1).value = inv.invoice_date ? new Date(inv.invoice_date) : null;
-        row.getCell(1).numFmt = "mm/dd/yyyy";
+        const row = detailsSheet.getRow(idx + 5);
+        row.getCell(1).value = inv.invoice_date ? asExcelLocalDate(inv.invoice_date) : null;
+        row.getCell(1).numFmt = "dd/mm/yyyy";
         row.getCell(2).value = inv.invoice_no || "N/A";
         row.getCell(3).value = inv.customer_name || "N/A";
         row.getCell(4).value = inv.final_total || 0;
         row.getCell(4).numFmt = CURRENCY_FMT;
         row.getCell(5).value = (inv.payment_status || "unpaid").toUpperCase();
+        statusChip(row.getCell(5), inv.payment_status || "unpaid");
         
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
+    });
+    addTotalsRow(detailsSheet, {
+        labelColumn: 3,
+        valueColumn: 4,
+        startRow: 5,
+        endRow: report.invoices.length + 4,
+        currency: true,
     });
     
     // Set column widths
@@ -1628,29 +2239,35 @@ const renderRevenueExcel = async (report) => {
     // Details Sheet: Expenses (match Revenue PDF table: Date, Description, Category, Amount, Status)
     const expensesSheet = workbook.addWorksheet("Expenses");
     const expenseHeaders = ["Date", "Description", "Category", "Amount", "Status"];
-    const expensesHeaderRow = expensesSheet.getRow(1);
-    expenseHeaders.forEach((header, idx) => {
-        const cell = expensesHeaderRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    expensesHeaderRow.height = 20;
+    addSheetBanner(expensesSheet, { reportTitle: "REVENUE REPORT • EXPENSES", range: report.range, columnCount: expenseHeaders.length });
+    const expensesHeaderRow = expensesSheet.getRow(4);
+    expenseHeaders.forEach((h, idx) => (expensesHeaderRow.getCell(idx + 1).value = h));
+    styleHeaderRow(expensesHeaderRow, expenseHeaders.length);
+    applySheetChrome(expensesSheet, { headerRow: 4, headerColumnCount: expenseHeaders.length, freezeRow: 4 });
+    setPrintSetup(expensesSheet, { landscape: true });
 
     (report.expenses || []).forEach((exp, idx) => {
-        const row = expensesSheet.getRow(idx + 2);
-        row.getCell(1).value = exp.expense_date ? new Date(exp.expense_date) : null;
-        row.getCell(1).numFmt = "mm/dd/yyyy";
+        const row = expensesSheet.getRow(idx + 5);
+        row.getCell(1).value = exp.expense_date ? asExcelLocalDate(exp.expense_date) : null;
+        row.getCell(1).numFmt = "dd/mm/yyyy";
         row.getCell(2).value = exp.description || "—";
+        row.getCell(2).alignment = { wrapText: true, vertical: "top" };
         row.getCell(3).value = exp.category || "Uncategorized";
         row.getCell(4).value = exp.amount || 0;
         row.getCell(4).numFmt = CURRENCY_FMT;
         row.getCell(5).value = (exp.payment_status || "pending").toUpperCase();
+        statusChip(row.getCell(5), exp.payment_status || "pending");
 
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
+    });
+    addTotalsRow(expensesSheet, {
+        labelColumn: 3,
+        valueColumn: 4,
+        startRow: 5,
+        endRow: (report.expenses || []).length + 4,
+        currency: true,
     });
 
     expensesSheet.getColumn(1).width = 12;
@@ -1662,21 +2279,18 @@ const renderRevenueExcel = async (report) => {
     // Raw sheets (full fields)
     const invoicesRawSheet = workbook.addWorksheet("Invoices Raw");
     const invoicesRawHeaders = ["ID", "Date", "Invoice No", "Customer", "Job Description", "Status", "Amount"];
-    const invRawHeaderRow = invoicesRawSheet.getRow(1);
-    invoicesRawHeaders.forEach((header, idx) => {
-        const cell = invRawHeaderRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    invRawHeaderRow.height = 20;
+    addSheetBanner(invoicesRawSheet, { reportTitle: "REVENUE REPORT • INVOICES (RAW)", range: report.range, columnCount: invoicesRawHeaders.length });
+    const invRawHeaderRow = invoicesRawSheet.getRow(4);
+    invoicesRawHeaders.forEach((h, idx) => (invRawHeaderRow.getCell(idx + 1).value = h));
+    styleHeaderRow(invRawHeaderRow, invoicesRawHeaders.length);
+    applySheetChrome(invoicesRawSheet, { headerRow: 4, headerColumnCount: invoicesRawHeaders.length, freezeRow: 4 });
+    setPrintSetup(invoicesRawSheet, { landscape: true });
 
     (report.invoices || []).forEach((inv, idx) => {
-        const row = invoicesRawSheet.getRow(idx + 2);
+        const row = invoicesRawSheet.getRow(idx + 5);
         row.getCell(1).value = inv.id ?? null;
-        row.getCell(2).value = inv.invoice_date ? new Date(inv.invoice_date) : null;
-        row.getCell(2).numFmt = "mm/dd/yyyy";
+        row.getCell(2).value = inv.invoice_date ? asExcelLocalDate(inv.invoice_date) : null;
+        row.getCell(2).numFmt = "dd/mm/yyyy";
         row.getCell(3).value = inv.invoice_no || "";
         row.getCell(4).value = inv.customer_name || "";
         row.getCell(5).value = inv.job_description || "";
@@ -1684,7 +2298,7 @@ const renderRevenueExcel = async (report) => {
         row.getCell(7).value = inv.final_total || 0;
         row.getCell(7).numFmt = CURRENCY_FMT;
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
@@ -1698,21 +2312,18 @@ const renderRevenueExcel = async (report) => {
 
     const expensesRawSheet = workbook.addWorksheet("Expenses Raw");
     const expensesRawHeaders = ["ID", "Date", "Description", "Category", "Amount", "Payment Status", "Payment Method", "Remarks"];
-    const expRawHeaderRow = expensesRawSheet.getRow(1);
-    expensesRawHeaders.forEach((header, idx) => {
-        const cell = expRawHeaderRow.getCell(idx + 1);
-        cell.value = header;
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0f172a" } };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-    });
-    expRawHeaderRow.height = 20;
+    addSheetBanner(expensesRawSheet, { reportTitle: "REVENUE REPORT • EXPENSES (RAW)", range: report.range, columnCount: expensesRawHeaders.length });
+    const expRawHeaderRow = expensesRawSheet.getRow(4);
+    expensesRawHeaders.forEach((h, idx) => (expRawHeaderRow.getCell(idx + 1).value = h));
+    styleHeaderRow(expRawHeaderRow, expensesRawHeaders.length);
+    applySheetChrome(expensesRawSheet, { headerRow: 4, headerColumnCount: expensesRawHeaders.length, freezeRow: 4 });
+    setPrintSetup(expensesRawSheet, { landscape: true });
 
     (report.expenses || []).forEach((exp, idx) => {
-        const row = expensesRawSheet.getRow(idx + 2);
+        const row = expensesRawSheet.getRow(idx + 5);
         row.getCell(1).value = exp.id ?? null;
-        row.getCell(2).value = exp.expense_date ? new Date(exp.expense_date) : null;
-        row.getCell(2).numFmt = "mm/dd/yyyy";
+        row.getCell(2).value = exp.expense_date ? asExcelLocalDate(exp.expense_date) : null;
+        row.getCell(2).numFmt = "dd/mm/yyyy";
         row.getCell(3).value = exp.description || "";
         row.getCell(4).value = exp.category || "";
         row.getCell(5).value = exp.amount || 0;
@@ -1720,8 +2331,9 @@ const renderRevenueExcel = async (report) => {
         row.getCell(6).value = exp.payment_status || "";
         row.getCell(7).value = exp.payment_method || "";
         row.getCell(8).value = exp.remarks || "";
+        row.getCell(8).alignment = { wrapText: true, vertical: "top" };
         if (idx % 2 === 0) {
-            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+            row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
         }
     });
 
@@ -1735,19 +2347,11 @@ const renderRevenueExcel = async (report) => {
     expensesRawSheet.getColumn(8).width = 30;
     
     // Add borders
-    [summarySheet, detailsSheet, expensesSheet, invoicesRawSheet, expensesRawSheet].forEach(sheet => {
-        sheet.eachRow((row, rowNumber) => {
-            row.eachCell((cell) => {
-                cell.border = {
-                    top: { style: "thin" },
-                    left: { style: "thin" },
-                    bottom: { style: "thin" },
-                    right: { style: "thin" },
-                };
-            });
-        });
-    });
+    [summarySheet, detailsSheet, expensesSheet, invoicesRawSheet, expensesRawSheet].forEach(applyTableBorders);
     
+    // Open the workbook on the first full-detail sheet ("Invoices") instead of Summary
+    workbook.views = [{ activeTab: 1 }];
+
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
 };

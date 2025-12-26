@@ -578,6 +578,37 @@ const generateInvoicePdfBuffer = (invoice) =>
         doc.text("AMOUNT", margin + col1 + col2 + col3, y + 7, { width: col4 - 8, align: "right" });
         y += rowH;
 
+        // Helper function to extract quantity from item_name if it contains (N×) format
+        const extractQuantityFromName = (itemName) => {
+            if (!itemName || typeof itemName !== "string") return null;
+            // Try to match patterns like "(2×)", "(2 x)", "(2x)", etc.
+            const patterns = [
+                /\((\d+(?:\.\d+)?)×\)/,  // (2×)
+                /\((\d+(?:\.\d+)?)\s*×\s*\)/,  // (2 ×) with spaces
+                /\((\d+(?:\.\d+)?)\s*x\s*\)/i,  // (2 x) case insensitive
+            ];
+            for (const pattern of patterns) {
+                const match = itemName.match(pattern);
+                if (match) {
+                    const parsed = Number(match[1]);
+                    if (!isNaN(parsed) && parsed > 0) {
+                        return parsed;
+                    }
+                }
+            }
+            return null;
+        };
+
+        // Helper function to remove quantity pattern from item_name
+        const cleanItemName = (itemName) => {
+            if (!itemName || typeof itemName !== "string") return itemName;
+            // Remove patterns like "(2×)", "(2 ×)", "(2x)", etc.
+            return itemName
+                .replace(/\s*\(\d+(?:\.\d+)?\s*×\s*\)/gi, "")  // Remove (N×) with any spacing
+                .replace(/\s*\(\d+(?:\.\d+)?\s*x\s*\)/gi, "")  // Remove (Nx) case insensitive
+                .trim();
+        };
+
         // Rows
         let rowNum = 1;
         const drawRow = (desc, qty, amount, alt) => {
@@ -591,8 +622,24 @@ const generateInvoicePdfBuffer = (invoice) =>
             y += rowH;
         };
 
-        items.forEach((item, i) => drawRow(item.item_name ?? "Item", String(item.quantity ?? 1), formatCurrency(item.line_total ?? 0), i % 2 === 0));
-        charges.forEach((c, i) => drawRow(c.label ?? "Charge", "1", formatCurrency(c.amount ?? 0), (items.length + i) % 2 === 0));
+        items.forEach((item, i) => {
+            // Try to get quantity from item_name if it contains (N×) format, otherwise use item.quantity
+            // Prioritize extracted quantity from name if available, as it's more accurate
+            const extractedQty = extractQuantityFromName(item.item_name);
+            const quantity = extractedQty !== null ? extractedQty : (item.quantity && item.quantity > 0 ? item.quantity : 1);
+            // Clean the item name to remove the quantity pattern
+            const cleanName = cleanItemName(item.item_name ?? "Item");
+            drawRow(cleanName, String(quantity), formatCurrency(item.line_total ?? 0), i % 2 === 0);
+        });
+        charges.forEach((c, i) => {
+            // Try to extract quantity from charge label if it contains (N×) format, otherwise default to 1
+            const extractedQty = extractQuantityFromName(c.label);
+            const quantity = extractedQty !== null ? extractedQty : 1;
+            // Clean the charge label to remove the quantity pattern
+            const cleanLabel = cleanItemName(c.label ?? "Charge");
+            const isAlt = (items.length + i) % 2 === 0;
+            drawRow(cleanLabel, String(quantity), formatCurrency(c.amount ?? 0), isAlt);
+        });
 
         y += 15;
 
@@ -635,6 +682,49 @@ const generateInvoicePdfBuffer = (invoice) =>
             y += 30;
         }
 
+        // ═══════════════════════════════════════════════════════════
+        // FOOTER
+        // ═══════════════════════════════════════════════════════════
+        // Ensure we have enough space for footer, add new page if needed
+        const footerSpace = 60;
+        const footerY = doc.page.height - margin - footerSpace;
+        
+        if (y > footerY - 20) {
+            doc.addPage();
+            // Add watermark to new page
+            if (fs.existsSync(logoPath)) {
+                doc.save();
+                doc.opacity(0.15);
+                const logoWidth = 400;
+                const logoHeight = 230;
+                const logoX = (pageWidth - logoWidth) / 2;
+                const logoY = (doc.page.height - logoHeight) / 2;
+                doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                doc.restore();
+                doc.opacity(1);
+            }
+            y = margin + 40;
+        }
+        
+        // Position footer near bottom of current page
+        const finalFooterY = doc.page.height - margin - footerSpace;
+        
+        // Draw thick dark gray horizontal line
+        doc.save();
+        doc.strokeColor("#374151"); // Dark gray color
+        doc.lineWidth(3);
+        doc.moveTo(margin, finalFooterY)
+            .lineTo(pageWidth - margin, finalFooterY)
+            .stroke();
+        doc.restore();
+        
+        // Add thank you message below the line (centered, dark red)
+        doc.font("Helvetica").fontSize(10).fillColor(PRIMARY);
+        const thankYouText = "Thank you for choosing New Yasuki Auto Motors!";
+        doc.text(thankYouText, margin, finalFooterY + 10, { 
+            width: contentWidth,
+            align: "center" 
+        });
 
         doc.end();
     });
