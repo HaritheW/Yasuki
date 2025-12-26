@@ -30,9 +30,30 @@ const allAsync = (sql, params = []) =>
         });
     });
 
-const generateInvoiceNumber = () => {
-    const suffix = Math.floor(1000 + Math.random() * 9000);
-    return `INV-${suffix}`;
+const generateInvoiceNumber = async () => {
+    const now = new Date();
+    const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const prefix = `INV-${datePart}-`;
+    const latest = await getAsync(
+        `
+        SELECT invoice_no
+        FROM Invoices
+        WHERE invoice_no LIKE ?
+        ORDER BY invoice_no DESC
+        LIMIT 1
+    `,
+        [`${prefix}%`]
+    );
+
+    let sequence = 1;
+    if (latest && latest.invoice_no) {
+        const tail = Number(latest.invoice_no.split("-").pop());
+        if (!Number.isNaN(tail)) {
+            sequence = tail + 1;
+        }
+    }
+
+    return `${prefix}${String(sequence).padStart(4, "0")}`;
 };
 
 const computeInvoiceTotals = (charges = [], reductions = []) => {
@@ -61,7 +82,7 @@ const computeInvoiceTotals = (charges = [], reductions = []) => {
 };
 
 const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = "unpaid", notes = null }) => {
-    const invoiceNo = generateInvoiceNumber();
+    const invoiceNo = await generateInvoiceNumber();
     const totals = computeInvoiceTotals(charges, extras);
 
     const insertInvoiceResult = await runAsync(
