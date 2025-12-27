@@ -1327,6 +1327,11 @@ const renderInventoryPdf = (report) =>
             const d = new Date(val);
             return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
         };
+        const formatDateTime = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+        };
 
         let y = margin;
 
@@ -1390,15 +1395,17 @@ const renderInventoryPdf = (report) =>
         // INVENTORY DETAILS TABLE
         // ═══════════════════════════════════════════════════════════
         const tableTop = y;
-        const col1 = 120;   // Item
-        const col2 = 50;    // Type
-        const col3 = 45;    // Qty
-        const col4 = 50;    // Unit
-        const col5 = 60;    // Unit Cost
-        const col6 = 50;    // Min Qty
-        const col7 = 35;    // Low
-        const col8 = 100;   // Notes
-        const rowH = 26;
+        const col1 = 85;    // Item
+        const col2 = 40;    // Type
+        const col3 = 35;    // Qty
+        const col4 = 40;    // Unit
+        const col5 = 50;    // Unit Cost
+        const col6 = 40;    // Min Qty
+        const col7 = 40;    // Low
+        const col8 = 70;    // Notes
+        const col9 = 55;    // Created
+        const col10 = 55;   // Updated
+        const rowH = 38;
 
         // Header with attractive grid
         const headerY = y;
@@ -1414,6 +1421,8 @@ const renderInventoryPdf = (report) =>
             { x: margin + col1 + col2 + col3 + col4 + col5, width: col6 },
             { x: margin + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
             { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7, width: col8 },
+            { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8, width: col9 },
+            { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9, width: col10 },
         ];
         
         doc.save();
@@ -1434,18 +1443,20 @@ const renderInventoryPdf = (report) =>
         doc.restore();
         
         doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-        doc.text("Item", margin + 8, headerY + 9, { width: col1 - 16 });
-        doc.text("Type", margin + col1 + 8, headerY + 9, { width: col2 - 16 });
-        doc.text("Qty", margin + col1 + col2 + 8, headerY + 9, { width: col3 - 16, align: "center" });
-        doc.text("Unit", margin + col1 + col2 + col3 + 8, headerY + 9, { width: col4 - 16 });
-        doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, headerY + 9, { width: col5 - 16, align: "right" });
-        doc.text("Min Qty", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 9, { width: col6 - 16, align: "center" });
-        doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 9, { width: col7 - 16, align: "center" });
-        doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, headerY + 9, { width: col8 - 16 });
+        doc.text("Item", margin + 8, headerY + 13, { width: col1 - 16 });
+        doc.text("Type", margin + col1 + 8, headerY + 13, { width: col2 - 16 });
+        doc.text("Qty", margin + col1 + col2 + 8, headerY + 13, { width: col3 - 16, align: "center" });
+        doc.text("Unit", margin + col1 + col2 + col3 + 8, headerY + 13, { width: col4 - 16 });
+        doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, headerY + 13, { width: col5 - 16, align: "right" });
+        doc.text("Min Qty", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 13, { width: col6 - 16, align: "center" });
+        doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 13, { width: col7 - 16, align: "center" });
+        doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, headerY + 13, { width: col8 - 16 });
+        doc.text("Created", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, headerY + 13, { width: col9 - 16 });
+        doc.text("Updated", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9 + 8, headerY + 13, { width: col10 - 16 });
         y += rowH;
 
         // Rows with attractive grid
-        const drawRow = (item, type, qty, unit, unitCost, reorder, low, notes, alt) => {
+        const drawRow = (item, type, qty, unit, unitCost, reorder, low, notes, created, updated, alt) => {
             const rowX = margin;
             const rowY = y;
             
@@ -1466,6 +1477,8 @@ const renderInventoryPdf = (report) =>
                 { x: rowX + col1 + col2 + col3 + col4 + col5, width: col6 },
                 { x: rowX + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
                 { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7, width: col8 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8, width: col9 },
+                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9, width: col10 },
             ];
             
             // Draw vertical grid lines
@@ -1493,14 +1506,16 @@ const renderInventoryPdf = (report) =>
             
             // Text content
             doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(item, rowX + 8, rowY + 9, { width: col1 - 16 });
-            doc.text(type, rowX + col1 + 8, rowY + 9, { width: col2 - 16 });
-            doc.text(qty, rowX + col1 + col2 + 8, rowY + 9, { width: col3 - 16, align: "center" });
-            doc.text(unit, rowX + col1 + col2 + col3 + 8, rowY + 9, { width: col4 - 16 });
-            doc.text(unitCost, rowX + col1 + col2 + col3 + col4 + 8, rowY + 9, { width: col5 - 16, align: "right" });
-            doc.text(reorder, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 9, { width: col6 - 16, align: "center" });
-            doc.text(low, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 9, { width: col7 - 16, align: "center" });
-            doc.text(notes, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, rowY + 9, { width: col8 - 16 });
+            doc.text(item, rowX + 8, rowY + 13, { width: col1 - 16 });
+            doc.text(type, rowX + col1 + 8, rowY + 13, { width: col2 - 16 });
+            doc.text(qty, rowX + col1 + col2 + 8, rowY + 13, { width: col3 - 16, align: "center" });
+            doc.text(unit, rowX + col1 + col2 + col3 + 8, rowY + 13, { width: col4 - 16 });
+            doc.text(unitCost, rowX + col1 + col2 + col3 + col4 + 8, rowY + 13, { width: col5 - 16, align: "right" });
+            doc.text(reorder, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 13, { width: col6 - 16, align: "center" });
+            doc.text(low, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 13, { width: col7 - 16, align: "center" });
+            doc.text(notes, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, rowY + 13, { width: col8 - 16 });
+            doc.text(created, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, rowY + 13, { width: col9 - 16 });
+            doc.text(updated, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9 + 8, rowY + 13, { width: col10 - 16 });
             y += rowH;
         };
 
@@ -1552,19 +1567,21 @@ const renderInventoryPdf = (report) =>
                     doc.restore();
                     
                     doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-                    doc.text("Item", margin + 8, newHeaderY + 9, { width: col1 - 16 });
-                    doc.text("Type", margin + col1 + 8, newHeaderY + 9, { width: col2 - 16 });
-                    doc.text("Qty", margin + col1 + col2 + 8, newHeaderY + 9, { width: col3 - 16, align: "center" });
-                    doc.text("Unit", margin + col1 + col2 + col3 + 8, newHeaderY + 9, { width: col4 - 16 });
-                    doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 9, { width: col5 - 16, align: "right" });
-                    doc.text("Min Qty", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 9, { width: col6 - 16, align: "center" });
-                    doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 9, { width: col7 - 16, align: "center" });
-                    doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, newHeaderY + 9, { width: col8 - 16 });
+                    doc.text("Item", margin + 8, newHeaderY + 13, { width: col1 - 16 });
+                    doc.text("Type", margin + col1 + 8, newHeaderY + 13, { width: col2 - 16 });
+                    doc.text("Qty", margin + col1 + col2 + 8, newHeaderY + 13, { width: col3 - 16, align: "center" });
+                    doc.text("Unit", margin + col1 + col2 + col3 + 8, newHeaderY + 13, { width: col4 - 16 });
+                    doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 13, { width: col5 - 16, align: "right" });
+                    doc.text("Min Qty", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 13, { width: col6 - 16, align: "center" });
+                    doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 13, { width: col7 - 16, align: "center" });
+                    doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, newHeaderY + 13, { width: col8 - 16 });
+                    doc.text("Created", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, newHeaderY + 13, { width: col9 - 16 });
+                    doc.text("Updated", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9 + 8, newHeaderY + 13, { width: col10 - 16 });
                     y += rowH;
                 }
 
                 const itemName = item.name || "—";
-                const truncatedItem = itemName.length > 25 ? itemName.substring(0, 22) + "…" : itemName;
+                const truncatedItem = itemName.length > 20 ? itemName.substring(0, 17) + "…" : itemName;
                 const itemType = item.type || "—";
                 const truncatedType = itemType.length > 10 ? itemType.substring(0, 7) + "…" : itemType;
                 const unit = item.unit || "—";
@@ -1573,7 +1590,9 @@ const renderInventoryPdf = (report) =>
                 const reorder = item.reorder_level ?? "—";
                 const low = item.low_stock ? "Yes" : "No";
                 const notes = item.description || "—";
-                const truncatedNotes = notes.length > 20 ? notes.substring(0, 17) + "…" : notes;
+                const truncatedNotes = notes.length > 15 ? notes.substring(0, 12) + "…" : notes;
+                const created = item.created_at ? formatDateTime(item.created_at) : "—";
+                const updated = item.updated_at ? formatDateTime(item.updated_at) : "—";
                 
                 drawRow(
                     truncatedItem,
@@ -1584,6 +1603,8 @@ const renderInventoryPdf = (report) =>
                     `${reorder}`,
                     low,
                     truncatedNotes,
+                    created,
+                    updated,
                     i % 2 === 0
                 );
             });
