@@ -537,20 +537,7 @@ const Reports = () => {
   const handleMonthSelection = (value: string) => {
     const option = monthOptions.find((opt) => opt.start.toISOString() === value);
     if (!option) return;
-
-    if (kind === "start") {
-      const currentEnd = monthlyEnd ?? option.start;
-      // Ensure we use full months: start of selected month to end of current end month
-      const adjustedEnd =
-        currentEnd < option.start ? endOfMonth(option.start) : endOfMonth(currentEnd);
-      setDateRange({ from: startOfMonth(option.start), to: adjustedEnd });
-    } else {
-      const currentStart = monthlyStart ?? option.start;
-      // Ensure we use full months: start of current start month to end of selected month
-      const adjustedStart =
-        currentStart > option.start ? startOfMonth(option.start) : startOfMonth(currentStart);
-      setDateRange({ from: adjustedStart, to: endOfMonth(option.end) });
-    }
+    // Set the date range to the selected month (start to end of that month)
     setDateRange({ from: option.start, to: option.end });
   };
 
