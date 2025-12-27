@@ -676,6 +676,107 @@ const fetchInventoryReport = async (range) => {
     };
 };
 
+// ================================
+//  SUPPLIER PURCHASE REPORT
+// ================================
+const fetchSupplierPurchaseReport = async (range) => {
+    const purchases = await allAsync(
+        `
+        SELECT
+            sp.id,
+            sp.supplier_id,
+            s.name AS supplier_name,
+            sp.inventory_item_id,
+            sp.item_name,
+            sp.quantity,
+            sp.unit_cost,
+            (COALESCE(sp.quantity, 0) * COALESCE(sp.unit_cost, 0)) AS line_total,
+            sp.payment_status,
+            sp.payment_method,
+            sp.purchase_date,
+            sp.notes,
+            sp.created_at
+        FROM SupplierPurchases sp
+        LEFT JOIN Suppliers s ON s.id = sp.supplier_id
+        WHERE DATE(COALESCE(sp.purchase_date, sp.created_at)) BETWEEN DATE(?) AND DATE(?)
+        ORDER BY sp.created_at DESC, sp.id DESC
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    // Normalize created_at (SQLite CURRENT_TIMESTAMP) into ISO-8601 UTC so JS Date parses it correctly.
+    // Example: "2025-12-27 15:59:31" -> "2025-12-27T15:59:31Z"
+    const purchasesWithTs = (purchases || []).map((p) => {
+        const createdAt = p?.created_at ? String(p.created_at) : "";
+        const createdAtIso =
+            createdAt && createdAt.includes("T")
+                ? createdAt
+                : createdAt && createdAt.includes(" ")
+                  ? `${createdAt.replace(" ", "T")}Z`
+                  : "";
+        return { ...p, purchase_ts: createdAtIso || null };
+    });
+
+    const totalsRow = await getAsync(
+        `
+        SELECT
+            COUNT(*) AS purchaseCount,
+            COALESCE(SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0)), 0) AS totalAmount,
+            COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN (COALESCE(quantity, 0) * COALESCE(unit_cost, 0)) ELSE 0 END), 0) AS paidAmount,
+            COALESCE(SUM(CASE WHEN payment_status = 'unpaid' THEN (COALESCE(quantity, 0) * COALESCE(unit_cost, 0)) ELSE 0 END), 0) AS unpaidAmount
+        FROM SupplierPurchases
+        WHERE DATE(COALESCE(purchase_date, created_at)) BETWEEN DATE(?) AND DATE(?)
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    const topSuppliers = await allAsync(
+        `
+        SELECT
+            sp.supplier_id,
+            s.name AS supplier_name,
+            COUNT(*) AS purchaseCount,
+            COALESCE(SUM(COALESCE(sp.quantity, 0) * COALESCE(sp.unit_cost, 0)), 0) AS totalAmount
+        FROM SupplierPurchases sp
+        LEFT JOIN Suppliers s ON s.id = sp.supplier_id
+        WHERE DATE(COALESCE(sp.purchase_date, sp.created_at)) BETWEEN DATE(?) AND DATE(?)
+        GROUP BY sp.supplier_id
+        ORDER BY totalAmount DESC
+        LIMIT 10
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    const topItems = await allAsync(
+        `
+        SELECT
+            sp.item_name,
+            COUNT(*) AS purchaseCount,
+            COALESCE(SUM(COALESCE(sp.quantity, 0)), 0) AS totalQty,
+            COALESCE(SUM(COALESCE(sp.quantity, 0) * COALESCE(sp.unit_cost, 0)), 0) AS totalAmount
+        FROM SupplierPurchases sp
+        WHERE DATE(COALESCE(sp.purchase_date, sp.created_at)) BETWEEN DATE(?) AND DATE(?)
+        GROUP BY sp.item_name
+        ORDER BY totalAmount DESC
+        LIMIT 10
+    `,
+        [range.startDate, range.endDate]
+    );
+
+    return {
+        range,
+        totals: {
+            purchaseCount: totalsRow?.purchaseCount ?? 0,
+            totalAmount: totalsRow?.totalAmount ?? 0,
+            paidAmount: totalsRow?.paidAmount ?? 0,
+            unpaidAmount: totalsRow?.unpaidAmount ?? 0,
+        },
+        topSuppliers,
+        topItems,
+        purchases: purchasesWithTs,
+    };
+};
+
 
 const renderExpensePdf = (report) =>
     new Promise((resolve, reject) => {
@@ -2179,6 +2280,344 @@ const renderInventoryExcel = async (report) => {
     return Buffer.from(buffer);
 };
 
+const renderSupplierPurchasePdf = (report) =>
+    new Promise((resolve, reject) => {
+        const doc = new PDFDocument({ margin: 50, size: "A4" });
+        const chunks = [];
+        doc.on("data", (chunk) => chunks.push(chunk));
+        doc.on("end", () => resolve(Buffer.concat(chunks)));
+        doc.on("error", reject);
+
+        const PRIMARY = "#B91C1C";
+        const DARK = "#111827";
+        const GRAY = "#6B7280";
+        const LIGHT = "#F9FAFB";
+        const BORDER = "#E5E7EB";
+        const margin = 50;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
+
+        const formatCurrency = (val) =>
+            `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const SL_TZ = "Asia/Colombo";
+        const formatDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return Number.isNaN(d.getTime())
+                ? String(val)
+                : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: SL_TZ });
+        };
+        const formatSLDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return Number.isNaN(d.getTime())
+                ? String(val)
+                : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: SL_TZ });
+        };
+        const formatSLTime = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return Number.isNaN(d.getTime())
+                ? String(val)
+                : d
+                      .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: SL_TZ })
+                      .replace(" ", "")
+                      .toUpperCase();
+        };
+
+        let y = margin;
+
+        // Watermark logo
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
+            doc.save();
+            doc.opacity(0.15);
+            const logoWidth = 400;
+            const logoX = (pageWidth - logoWidth) / 2;
+            const logoY = (doc.page.height - 230) / 2;
+            doc.image(logoPath, logoX, logoY, { width: logoWidth });
+            doc.restore();
+            doc.opacity(1);
+        }
+
+        // Header
+        const logoSize = 50;
+        if (fs.existsSync(logoPath)) {
+            doc.image(logoPath, margin, y, { width: logoSize, height: logoSize });
+        }
+        const textX = margin + logoSize + 15;
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text(
+            "Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com",
+            textX,
+            y + 28
+        );
+        y += logoSize + 10;
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
+        y += 15;
+
+        // Title
+        doc.font("Helvetica-Bold").fontSize(20).fillColor(DARK);
+        doc.text("SUPPLIER PURCHASE REPORT", margin, y);
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        const periodText = `${formatDate(report.range.startDate)} - ${formatDate(report.range.endDate)}`;
+        doc.text(`Period: ${periodText}`, pageWidth - margin - 180, y + 2, { width: 180, align: "right" });
+        doc.text(`Generated: ${formatDate(new Date())}`, pageWidth - margin - 180, y + 14, { width: 180, align: "right" });
+        y += 38;
+
+        // Summary cards
+        const cardH = 55;
+        const gap = 10;
+        const cardW = (contentWidth - gap * 3) / 4;
+        const drawCard = (x, label, value) => {
+            doc.roundedRect(x, y, cardW, cardH, 8).fill(LIGHT).strokeColor(BORDER).stroke();
+            doc.font("Helvetica").fontSize(9).fillColor(GRAY).text(label, x + 12, y + 10, { width: cardW - 24 });
+            doc.font("Helvetica-Bold").fontSize(14).fillColor(DARK).text(value, x + 12, y + 28, { width: cardW - 24 });
+        };
+        drawCard(margin + (cardW + gap) * 0, "Purchases", String(report?.totals?.purchaseCount ?? 0));
+        drawCard(margin + (cardW + gap) * 1, "Total Amount", formatCurrency(report?.totals?.totalAmount ?? 0));
+        drawCard(margin + (cardW + gap) * 2, "Paid", formatCurrency(report?.totals?.paidAmount ?? 0));
+        drawCard(margin + (cardW + gap) * 3, "Unpaid", formatCurrency(report?.totals?.unpaidAmount ?? 0));
+        y += cardH + 18;
+
+        // Table
+        // IMPORTANT: column widths must fit inside contentWidth, otherwise "Status" renders outside the grid.
+        const headerH = 22;
+        const rowH = 22;
+        const col1 = 60;  // Date
+        const col2 = 45;  // Time (Sri Lanka)
+        const col3 = 95;  // Supplier
+        const col4 = 105; // Item
+        const col5 = 35;  // Qty
+        const col6 = 55;  // Unit Cost
+        const col7 = 55;  // Total
+        const col8 = 45;  // Status
+
+        const colX = [
+            margin,
+            margin + col1,
+            margin + col1 + col2,
+            margin + col1 + col2 + col3,
+            margin + col1 + col2 + col3 + col4,
+            margin + col1 + col2 + col3 + col4 + col5,
+            margin + col1 + col2 + col3 + col4 + col5 + col6,
+            margin + col1 + col2 + col3 + col4 + col5 + col6 + col7,
+            margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8,
+        ];
+        const drawVerticalGrid = (topY, height, color) => {
+            doc.save();
+            doc.strokeColor(color).lineWidth(0.5);
+            // internal separators (skip left edge, right edge handled by row rect)
+            for (let i = 1; i < colX.length - 1; i += 1) {
+                doc.moveTo(colX[i], topY).lineTo(colX[i], topY + height).stroke();
+            }
+            doc.restore();
+        };
+
+        const drawHeader = () => {
+            doc.rect(margin, y, contentWidth, headerH).fill(DARK);
+            doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+            doc.text("Date", margin + 6, y + 7, { width: col1 - 12 });
+            doc.text("Time", margin + col1 + 6, y + 7, { width: col2 - 12 });
+            doc.text("Supplier", margin + col1 + col2 + 6, y + 7, { width: col3 - 12 });
+            doc.text("Item", margin + col1 + col2 + col3 + 6, y + 7, { width: col4 - 12 });
+            doc.text("Qty", margin + col1 + col2 + col3 + col4 + 6, y + 7, { width: col5 - 12, align: "right" });
+            doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + col5 + 6, y + 7, { width: col6 - 12, align: "right" });
+            doc.text("Total", margin + col1 + col2 + col3 + col4 + col5 + col6 + 6, y + 7, { width: col7 - 12, align: "right" });
+            doc.text("Status", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 6, y + 7, {
+                width: col8 - 12,
+                align: "center",
+            });
+
+            // column separators for header
+            drawVerticalGrid(y, headerH, "#1f2937");
+            y += headerH;
+        };
+
+        const rows = (report.purchases || []).slice(0, 300);
+        if (!rows.length) {
+            doc.font("Helvetica").fontSize(10).fillColor(GRAY);
+            doc.text("No supplier purchases for the selected period.", margin, y + 12);
+            doc.end();
+            return;
+        }
+
+        drawHeader();
+
+        rows.forEach((p, idx) => {
+            const bottomLimit = doc.page.height - doc.page.margins.bottom - 30;
+            if (y > bottomLimit) {
+                doc.addPage();
+                // watermark
+                if (fs.existsSync(logoPath)) {
+                    doc.save();
+                    doc.opacity(0.15);
+                    const logoWidth = 400;
+                    const logoX = (pageWidth - logoWidth) / 2;
+                    const logoY = (doc.page.height - 230) / 2;
+                    doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                    doc.restore();
+                    doc.opacity(1);
+                }
+                y = margin;
+                drawHeader();
+            }
+
+            if (idx % 2 === 0) {
+                doc.rect(margin, y, contentWidth, rowH).fill(LIGHT);
+            }
+
+            doc.save();
+            doc.strokeColor(BORDER).lineWidth(0.5);
+            doc.rect(margin, y, contentWidth, rowH).stroke();
+            doc.restore();
+
+            // column separators for row
+            drawVerticalGrid(y, rowH, BORDER);
+
+            const supplier = p.supplier_name || `Supplier #${p.supplier_id}`;
+            const item = p.item_name || "—";
+            const qty = Number(p.quantity ?? 0);
+            const unitCost = Number(p.unit_cost ?? 0);
+            const lineTotal = Number(p.line_total ?? qty * unitCost);
+            const status = (p.payment_status || "unpaid").toUpperCase();
+            // Notes intentionally omitted from PDF table (space constraints on A4).
+
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(formatSLDate(p.purchase_ts || p.created_at || p.purchase_date), margin + 6, y + 7, { width: col1 - 12 });
+            doc.text(formatSLTime(p.purchase_ts || p.created_at || p.purchase_date), margin + col1 + 6, y + 7, { width: col2 - 12 });
+            doc.text(supplier, margin + col1 + col2 + 6, y + 7, { width: col3 - 12 });
+            doc.text(item, margin + col1 + col2 + col3 + 6, y + 7, { width: col4 - 12 });
+            doc.text(String(qty), margin + col1 + col2 + col3 + col4 + 6, y + 7, { width: col5 - 12, align: "right" });
+            doc.text(formatCurrency(unitCost), margin + col1 + col2 + col3 + col4 + col5 + 6, y + 7, { width: col6 - 12, align: "right" });
+            doc.text(formatCurrency(lineTotal), margin + col1 + col2 + col3 + col4 + col5 + col6 + 6, y + 7, { width: col7 - 12, align: "right" });
+            doc.text(status, margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 6, y + 7, { width: col8 - 12, align: "center" });
+
+            y += rowH;
+        });
+
+        if ((report.purchases || []).length > rows.length) {
+            doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+            doc.text(`+ ${(report.purchases || []).length - rows.length} more entries not shown`, margin, y + 6);
+        }
+
+        doc.end();
+    });
+
+const renderSupplierPurchaseExcel = async (report) => {
+    const workbook = new ExcelJS.Workbook();
+    setWorkbookMeta(workbook);
+
+    const SL_TZ = "Asia/Colombo";
+    const formatSLDate = (val) => {
+        if (!val) return "";
+        const d = new Date(val);
+        return Number.isNaN(d.getTime())
+            ? String(val)
+            : d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: SL_TZ });
+    };
+    const formatSLTime = (val) => {
+        if (!val) return "";
+        const d = new Date(val);
+        return Number.isNaN(d.getTime())
+            ? ""
+            : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: SL_TZ });
+    };
+
+    // Summary Sheet
+    const summarySheet = workbook.addWorksheet("Summary");
+    addSheetBanner(summarySheet, { reportTitle: "SUPPLIER PURCHASE REPORT • SUMMARY", range: report.range, columnCount: 4 });
+
+    let row = 5;
+    summarySheet.getRow(row).getCell(1).value = "Purchases";
+    summarySheet.getRow(row).getCell(1).font = { bold: true };
+    summarySheet.getRow(row).getCell(2).value = report?.totals?.purchaseCount ?? 0;
+    summarySheet.getRow(row).getCell(2).font = { bold: true, size: 12 };
+
+    summarySheet.getRow(row).getCell(3).value = "Total Amount";
+    summarySheet.getRow(row).getCell(3).font = { bold: true };
+    summarySheet.getRow(row).getCell(4).value = report?.totals?.totalAmount ?? 0;
+    summarySheet.getRow(row).getCell(4).numFmt = '"LKR "#,##0.00';
+    summarySheet.getRow(row).getCell(4).font = { bold: true, size: 12 };
+
+    row += 2;
+    summarySheet.getRow(row).getCell(1).value = "Paid Amount";
+    summarySheet.getRow(row).getCell(1).font = { bold: true };
+    summarySheet.getRow(row).getCell(2).value = report?.totals?.paidAmount ?? 0;
+    summarySheet.getRow(row).getCell(2).numFmt = '"LKR "#,##0.00';
+    summarySheet.getRow(row).getCell(2).font = { bold: true, size: 12 };
+
+    summarySheet.getRow(row).getCell(3).value = "Unpaid Amount";
+    summarySheet.getRow(row).getCell(3).font = { bold: true };
+    summarySheet.getRow(row).getCell(4).value = report?.totals?.unpaidAmount ?? 0;
+    summarySheet.getRow(row).getCell(4).numFmt = '"LKR "#,##0.00';
+    summarySheet.getRow(row).getCell(4).font = { bold: true, size: 12 };
+
+    summarySheet.getColumn(1).width = 18;
+    summarySheet.getColumn(2).width = 18;
+    summarySheet.getColumn(3).width = 18;
+    summarySheet.getColumn(4).width = 18;
+    setPrintSetup(summarySheet, { landscape: false });
+    applyTableBorders(summarySheet);
+
+    // Details Sheet
+    const detailsSheet = workbook.addWorksheet("Supplier Purchases");
+    const headers = ["Date", "Time", "Supplier", "Item", "Qty", "Unit Cost", "Total", "Status", "Payment Method", "Notes"];
+    addSheetBanner(detailsSheet, { reportTitle: "SUPPLIER PURCHASE REPORT", range: report.range, columnCount: headers.length });
+
+    const headerRow = detailsSheet.getRow(4);
+    headers.forEach((h, idx) => (headerRow.getCell(idx + 1).value = h));
+    styleHeaderRow(headerRow, headers.length);
+    applySheetChrome(detailsSheet, { headerRow: 4, headerColumnCount: headers.length, freezeRow: 4 });
+    setPrintSetup(detailsSheet, { landscape: true });
+
+    (report.purchases || []).forEach((p, idx) => {
+        const r = detailsSheet.getRow(idx + 5);
+        const qty = Number(p.quantity ?? 0);
+        const unitCost = Number(p.unit_cost ?? 0);
+        const lineTotal = Number(p.line_total ?? qty * unitCost);
+
+        const ts = p.purchase_ts || p.created_at || p.purchase_date;
+        r.getCell(1).value = formatSLDate(ts);
+        r.getCell(2).value = formatSLTime(ts);
+        r.getCell(3).value = p.supplier_name || `Supplier #${p.supplier_id}`;
+        r.getCell(4).value = p.item_name || "";
+        r.getCell(5).value = qty;
+        r.getCell(6).value = unitCost;
+        r.getCell(6).numFmt = '"LKR "#,##0.00';
+        r.getCell(7).value = lineTotal;
+        r.getCell(7).numFmt = '"LKR "#,##0.00';
+        r.getCell(8).value = p.payment_status || "unpaid";
+        statusChip(r.getCell(8), (p.payment_status || "unpaid") === "paid" ? "paid" : "unpaid");
+        r.getCell(9).value = p.payment_method || "";
+        r.getCell(10).value = p.notes || "";
+        r.getCell(10).alignment = { wrapText: true, vertical: "top" };
+
+        if (idx % 2 === 0) {
+            r.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXCEL_ALT_ROW } };
+        }
+    });
+
+    detailsSheet.getColumn(1).width = 12;
+    detailsSheet.getColumn(2).width = 10;
+    detailsSheet.getColumn(3).width = 24;
+    detailsSheet.getColumn(4).width = 30;
+    detailsSheet.getColumn(5).width = 10;
+    detailsSheet.getColumn(6).width = 14;
+    detailsSheet.getColumn(7).width = 14;
+    detailsSheet.getColumn(8).width = 12;
+    detailsSheet.getColumn(9).width = 16;
+    detailsSheet.getColumn(10).width = 30;
+
+    [summarySheet, detailsSheet].forEach(applyTableBorders);
+    workbook.views = [{ activeTab: 1 }];
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+};
+
 const renderRevenueExcel = async (report) => {
     const workbook = new ExcelJS.Workbook();
     const CURRENCY_FMT = '"LKR "#,##0.00';
@@ -2780,6 +3219,70 @@ router.get("/inventory/excel", async (req, res) => {
         res.setHeader("Content-Disposition", `attachment; filename=inventory-report-${range.startDate}-to-${range.endDate}.xlsx`);
         res.setHeader("Content-Length", buffer.length);
         
+        res.status(200).send(buffer);
+    } catch (error) {
+        console.error("Excel generation error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.get("/supplier-purchases", async (req, res) => {
+    try {
+        const range = deriveDateRange(req.query);
+        const report = await fetchSupplierPurchaseReport(range);
+        res.json(report);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.get("/supplier-purchases/pdf", async (req, res) => {
+    try {
+        const range = deriveDateRange(req.query);
+        const report = await fetchSupplierPurchaseReport(range);
+        const buffer = await renderSupplierPurchasePdf(report);
+
+        if (!buffer || buffer.length === 0) {
+            throw new Error("Generated PDF buffer is empty");
+        }
+
+        res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename=supplier-purchase-report-${range.startDate}-to-${range.endDate}.pdf`
+        );
+        res.setHeader("Content-Length", buffer.length);
+
+        res.status(200).send(buffer);
+    } catch (error) {
+        console.error("PDF generation error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.get("/supplier-purchases/excel", async (req, res) => {
+    try {
+        const range = deriveDateRange(req.query);
+        const report = await fetchSupplierPurchaseReport(range);
+        const buffer = await renderSupplierPurchaseExcel(report);
+
+        if (!buffer || buffer.length === 0) {
+            throw new Error("Generated Excel buffer is empty");
+        }
+
+        res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename=supplier-purchase-report-${range.startDate}-to-${range.endDate}.xlsx`
+        );
+        res.setHeader("Content-Length", buffer.length);
+
         res.status(200).send(buffer);
     } catch (error) {
         console.error("Excel generation error:", error);
