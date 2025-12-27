@@ -210,7 +210,7 @@ const Jobs = () => {
   const [initialAmount, setInitialAmount] = useState("");
   const [advanceAmount, setAdvanceAmount] = useState("");
   const [mileage, setMileage] = useState("");
-  const [mileageUnit, setMileageUnit] = useState<"km" | "m">("km");
+  const [mileageUnit, setMileageUnit] = useState<"km" | "mi">("km");
   const [jobStatus, setJobStatus] = useState<JobStatus>("Pending");
   const [jobCategory, setJobCategory] = useState<string>(JOB_CATEGORY_OPTIONS[0]);
   const [assignedTechnicians, setAssignedTechnicians] = useState<number[]>([]);
@@ -426,8 +426,8 @@ const Jobs = () => {
         return;
       }
       // Convert to kilometers (database stores in km)
-      // If input is in meters, divide by 1000; if in km, use as is
-      parsedMileage = mileageUnit === "m" ? mileageValue / 1000 : mileageValue;
+      // If input is in miles, multiply by 1.60934; if in km, use as is
+      parsedMileage = mileageUnit === "mi" ? mileageValue * 1.60934 : mileageValue;
     }
 
     const payload: CreateJobPayload = {
@@ -701,7 +701,8 @@ const Jobs = () => {
         return;
       }
       // Convert to kilometers (database stores in km)
-      mileage = mileageUnitRaw === "m" ? mileageValue / 1000 : mileageValue;
+      // If input is in miles, multiply by 1.60934; if in km, use as is
+      mileage = mileageUnitRaw === "mi" ? mileageValue * 1.60934 : mileageValue;
     }
 
     updateJobMutation.mutate({
@@ -913,18 +914,18 @@ const Jobs = () => {
                       type="number"
                       min="0"
                       step="0.01"
-                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 50000000"}
+                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 31000"}
                       value={mileage}
                       onChange={(event) => setMileage(event.target.value)}
                       className="flex-1"
                     />
-                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "m")}>
+                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "mi")}>
                       <SelectTrigger className="w-[120px]">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="km">Kilometers</SelectItem>
-                        <SelectItem value="m">Meters</SelectItem>
+                        <SelectItem value="mi">Miles</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1445,7 +1446,7 @@ const Jobs = () => {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="km">Kilometers</SelectItem>
-                        <SelectItem value="m">Meters</SelectItem>
+                        <SelectItem value="mi">Miles</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
