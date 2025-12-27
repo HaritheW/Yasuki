@@ -1,11 +1,7 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-<<<<<<< Updated upstream
-import { Plus, Phone, Edit, Trash2 } from "lucide-react";
-=======
-import { Plus, Phone, Edit, Trash2, Briefcase, Calendar, User, Car } from "lucide-react";
->>>>>>> Stashed changes
+import { Plus, Phone, Edit, Trash2, Briefcase, Calendar, User, Car, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -26,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 
@@ -40,8 +37,18 @@ type Technician = {
 
 type TechnicianJob = {
   id: number;
-  description: string | null;
+  customer_id: number;
+  customer_name: string | null;
+  vehicle_id: number | null;
+  vehicle_name: string | null;
   job_status: string;
+  category: string | null;
+  description: string | null;
+  notes: string | null;
+  initial_amount: number | null;
+  advance_amount: number | null;
+  mileage: number | null;
+  created_at: string;
 };
 
 type UpsertTechnicianPayload = {
@@ -69,6 +76,7 @@ const Technicians = () => {
   const [editStatus, setEditStatus] = useState<TechnicianStatus>("Active");
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const {
     data: techniciansData,
@@ -248,6 +256,60 @@ const Technicians = () => {
 
   const jobsForTechnician = (id: number) => jobCounts?.[id] ?? 0;
 
+  // Fetch detailed jobs for selected technician
+  const {
+    data: technicianJobs,
+    isLoading: technicianJobsLoading,
+    isError: technicianJobsError,
+  } = useQuery<TechnicianJob[]>({
+    queryKey: [...TECHNICIANS_QUERY_KEY, "jobs", selectedTech?.id],
+    queryFn: () => apiFetch<TechnicianJob[]>(`/technicians/${selectedTech?.id}/jobs?include_completed=true`),
+    enabled: Boolean(selectedTech?.id) && detailOpen,
+  });
+
+  const formatCurrency = (value: number | null | undefined) => {
+    if (value === null || value === undefined) return "—";
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: "LKR",
+      maximumFractionDigits: 2,
+    }).format(value);
+  };
+
+  const formatDate = (value: string | null | undefined) => {
+    if (!value) return "—";
+    const normalized = value.includes("T") ? value : value.replace(" ", "T");
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return value;
+    const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }).format(adjusted);
+  };
+
+  const formatVehicle = (job: TechnicianJob) => {
+    if (job.vehicle_name) return job.vehicle_name;
+    return "—";
+  };
+
+  const getJobStatusBadge = (status: string) => {
+    const normalized = status?.toLowerCase();
+    switch (normalized) {
+      case "completed":
+        return { label: "Completed", className: "bg-success text-success-foreground" };
+      case "in progress":
+        return { label: "In Progress", className: "bg-primary text-primary-foreground" };
+      case "pending":
+        return { label: "Pending", className: "bg-warning text-warning-foreground" };
+      case "cancelled":
+        return { label: "Cancelled", className: "bg-destructive text-destructive-foreground" };
+      default:
+        return { label: status || "Unknown", className: "bg-muted text-muted-foreground" };
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -405,22 +467,23 @@ const Technicians = () => {
           }
         }}
       >
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Technician Details</DialogTitle>
             <DialogDescription>
-              Complete information for {selectedTech?.name ?? "technician"}
+              Complete information and assigned jobs for {selectedTech?.name ?? "technician"}
             </DialogDescription>
           </DialogHeader>
           {selectedTech && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-6">
+              {/* Technician Information */}
+              <div className="grid grid-cols-2 gap-4 rounded-md border bg-muted/20 p-4">
                 <div>
-                  <Label className="text-muted-foreground">Full Name</Label>
-                  <p className="font-semibold">{selectedTech.name}</p>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Full Name</Label>
+                  <p className="font-semibold text-lg mt-1">{selectedTech.name}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Status</Label>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Status</Label>
                   <div className="mt-1">
                     <Badge
                       className={
@@ -433,19 +496,17 @@ const Technicians = () => {
                   </div>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Phone</Label>
-                  <p className="font-semibold">{selectedTech.phone || "Not provided"}</p>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Phone</Label>
+                  <p className="font-semibold mt-1">{selectedTech.phone || "Not provided"}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Assigned Jobs</Label>
-                  <p className="font-semibold text-2xl">
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Total Assigned Jobs</Label>
+                  <p className="font-semibold text-2xl mt-1">
                     {jobCountsLoading ? "…" : jobsForTechnician(selectedTech.id)}
                   </p>
                 </div>
               </div>
 
-<<<<<<< Updated upstream
-=======
               {/* Assigned Jobs Section */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -492,6 +553,7 @@ const Technicians = () => {
                             <th className="p-3 font-medium">Category</th>
                             <th className="p-3 font-medium text-right">Amount</th>
                             <th className="p-3 font-medium">Date</th>
+                            <th className="p-3 font-medium text-center">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -541,6 +603,20 @@ const Technicians = () => {
                                     <span className="text-xs">{formatDate(job.created_at)}</span>
                                   </div>
                                 </td>
+                                <td className="p-3 text-center">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      navigate("/jobs", { state: { jobId: job.id } });
+                                    }}
+                                    className="h-8"
+                                  >
+                                    <ExternalLink className="h-3 w-3 mr-1" />
+                                    View
+                                  </Button>
+                                </td>
                               </tr>
                             );
                           })}
@@ -580,7 +656,6 @@ const Technicians = () => {
               </div>
 
               {/* Action Buttons */}
->>>>>>> Stashed changes
               <div className="flex gap-3 pt-4 border-t">
                 <Button
                   variant="outline"
