@@ -199,6 +199,7 @@ const Jobs = () => {
   const [selectedJob, setSelectedJob] = useState<JobSummary | null>(null);
   const [selectedJobDetail, setSelectedJobDetail] = useState<JobDetail | null>(null);
   const [jobDetailLoading, setJobDetailLoading] = useState(false);
+  const [editTechnicians, setEditTechnicians] = useState<number[]>([]);
 
   const [vehicleMake, setVehicleMake] = useState("");
   const [vehicleModel, setVehicleModel] = useState("");
@@ -210,6 +211,7 @@ const Jobs = () => {
   const [initialAmount, setInitialAmount] = useState("");
   const [advanceAmount, setAdvanceAmount] = useState("");
   const [mileage, setMileage] = useState("");
+  const [mileageUnit, setMileageUnit] = useState<"km" | "mi">("km");
   const [jobStatus, setJobStatus] = useState<JobStatus>("Pending");
   const [jobCategory, setJobCategory] = useState<string>(JOB_CATEGORY_OPTIONS[0]);
   const [assignedTechnicians, setAssignedTechnicians] = useState<number[]>([]);
@@ -336,6 +338,15 @@ const Jobs = () => {
     });
   };
 
+  const toggleEditTechnician = (id: number, checked: boolean) => {
+    setEditTechnicians((prev) => {
+      if (checked) {
+        return prev.includes(id) ? prev : [...prev, id];
+      }
+      return prev.filter((techId) => techId !== id);
+    });
+  };
+
   const createJobMutation = useMutation<JobSummary, Error, CreateJobPayload>({
     mutationFn: (payload) =>
       apiFetch<JobSummary>("/jobs", {
@@ -423,6 +434,9 @@ const Jobs = () => {
         });
         return;
       }
+      // Convert to kilometers (database stores in km)
+      // If input is in miles, multiply by 1.60934; if in km, use as is
+      parsedMileage = mileageUnit === "mi" ? mileageValue * 1.60934 : mileageValue;
       // Database stores in kilometers
       parsedMileage = mileageValue;
     }
@@ -508,6 +522,7 @@ const Jobs = () => {
         initial_amount: number | null;
         advance_amount: number | null;
         mileage?: number | null;
+        technician_ids?: number[];
         create_invoice?: boolean;
       };
     }
@@ -696,6 +711,9 @@ const Jobs = () => {
         });
         return;
       }
+      // Convert to kilometers (database stores in km)
+      // If input is in miles, multiply by 1.60934; if in km, use as is
+      mileage = mileageUnitRaw === "mi" ? mileageValue * 1.60934 : mileageValue;
       // Database stores in kilometers
       mileage = mileageValue;
     }
@@ -710,6 +728,7 @@ const Jobs = () => {
         initial_amount,
         advance_amount,
         mileage,
+        technician_ids: editTechnicians,
       },
     });
   };
@@ -902,6 +921,28 @@ const Jobs = () => {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="mileage">Mileage</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="mileage"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 31000"}
+                      value={mileage}
+                      onChange={(event) => setMileage(event.target.value)}
+                      className="flex-1"
+                    />
+                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "mi")}>
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="km">Kilometers</SelectItem>
+                        <SelectItem value="mi">Miles</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <Label htmlFor="mileage">Mileage (Kilometers)</Label>
                   <Input
                     id="mileage"
@@ -1332,6 +1373,9 @@ const Jobs = () => {
         open={jobEditOpen}
         onOpenChange={(open) => {
           setJobEditOpen(open);
+          if (open && selectedJob) {
+            setEditTechnicians(selectedJob.technicians.map((t) => t.id));
+          }
           if (!open && !jobDetailOpen && !jobDeleteOpen) {
             setSelectedJob(null);
           }
@@ -1404,6 +1448,35 @@ const Jobs = () => {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="editMileage">Mileage</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="editMileage"
+                      name="mileage"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      defaultValue={
+                        selectedJob.mileage !== null && selectedJob.mileage !== undefined
+                          ? selectedJob.mileage
+                          : undefined
+                      }
+                      placeholder="e.g. 50000"
+                      className="flex-1"
+                    />
+                    <Select
+                      name="mileage_unit"
+                      defaultValue="km"
+                    >
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="km">Kilometers</SelectItem>
+                        <SelectItem value="mi">Miles</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <Label htmlFor="editMileage">Mileage (Kilometers)</Label>
                   <Input
                     id="editMileage"
@@ -1420,6 +1493,40 @@ const Jobs = () => {
                   />
                 </div>
                 </div>
+
+              <div className="space-y-2">
+                <Label>Assign Technicians</Label>
+                <div className="flex flex-col gap-2 rounded-md border p-4">
+                  {techniciansLoading && <p className="text-sm text-muted-foreground">Loading technicians...</p>}
+                  {techniciansError && (
+                    <p className="text-sm text-destructive">
+                      {techniciansErrorObject?.message ?? "Unable to load technicians."}
+                    </p>
+                  )}
+                  {!techniciansLoading && !techniciansError && technicians.length === 0 && (
+                    <p className="text-sm text-muted-foreground">No technicians available. Add technicians first.</p>
+                  )}
+                  {!techniciansLoading &&
+                    !techniciansError &&
+                    technicians.length > 0 &&
+                    technicians.map((technician) => (
+                      <label key={technician.id} className="flex items-center gap-3 text-sm">
+                        <Checkbox 
+                          id={`edit-tech-${technician.id}`}
+                          checked={editTechnicians.includes(technician.id)}
+                          onCheckedChange={(checked) => toggleEditTechnician(technician.id, checked === true)}
+                        />
+                        <span className="flex-1">
+                          {technician.name}
+                          {technician.status !== "Active" && (
+                            <span className="ml-2 text-xs text-muted-foreground">({technician.status})</span>
+                          )}
+                        </span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="editDescription">Job description</Label>
                 <Textarea
