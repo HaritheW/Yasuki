@@ -273,6 +273,7 @@ const Reports = () => {
         return `${fromMonthYear} - ${toMonthYear}`;
       }
       return `${fromLabel} - ${toLabel}`;
+      return formatMonthYear(fromMonth);
     }
     if (timeframe === "yearly") {
       return `Year ${singleDate.getFullYear()}`;
@@ -537,23 +538,20 @@ const Reports = () => {
     const option = monthOptions.find((opt) => opt.start.toISOString() === value);
     if (!option) return;
 
-    // Get current month range from dateRange if it exists
-    const currentStart = dateRange?.from ? startOfMonth(dateRange.from) : null;
-    const currentEnd = dateRange?.to ? endOfMonth(dateRange.to) : null;
-
-    // If no current range or selected month is before current start, treat as new start
-    if (!currentStart || option.start < currentStart) {
-      const adjustedEnd = currentEnd && currentEnd >= option.start 
-        ? endOfMonth(currentEnd) 
-        : endOfMonth(option.start);
+    if (kind === "start") {
+      const currentEnd = monthlyEnd ?? option.start;
+      // Ensure we use full months: start of selected month to end of current end month
+      const adjustedEnd =
+        currentEnd < option.start ? endOfMonth(option.start) : endOfMonth(currentEnd);
       setDateRange({ from: startOfMonth(option.start), to: adjustedEnd });
     } else {
-      // Selected month is after or equal to current start, treat as new end
-      const adjustedStart = currentStart 
-        ? startOfMonth(currentStart) 
-        : startOfMonth(option.start);
+      const currentStart = monthlyStart ?? option.start;
+      // Ensure we use full months: start of current start month to end of selected month
+      const adjustedStart =
+        currentStart > option.start ? startOfMonth(option.start) : startOfMonth(currentStart);
       setDateRange({ from: adjustedStart, to: endOfMonth(option.end) });
     }
+    setDateRange({ from: option.start, to: option.end });
   };
 
   return (
