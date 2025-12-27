@@ -949,7 +949,55 @@ const renderExpensePdf = (report) =>
             if (report.expenses.length > maxRows) {
                 doc.font("Helvetica").fontSize(9).fillColor(GRAY);
                 doc.text(`+ ${report.expenses.length - maxRows} more entries not shown`, margin, y + 5);
+                y += 20;
             }
+
+            // Calculate total amount
+            const totalAmount = report.expenses.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+
+            // Add spacing before totals row
+            y += 10;
+
+            // Draw totals row
+            const totalsRowY = y;
+            const totalsRowH = rowH;
+
+            // Background for totals row (slightly darker)
+            doc.save();
+            doc.rect(margin, totalsRowY, contentWidth, totalsRowH).fill("#F3F4F6");
+            doc.restore();
+
+            // Draw grid lines for totals row
+            doc.save();
+            doc.strokeColor(BORDER).lineWidth(0.5);
+            headerCellPositions.forEach((cell, idx) => {
+                if (idx > 0) {
+                    doc.moveTo(cell.x, totalsRowY)
+                        .lineTo(cell.x, totalsRowY + totalsRowH)
+                        .stroke();
+                }
+            });
+            // Right border
+            doc.moveTo(margin + contentWidth, totalsRowY)
+                .lineTo(margin + contentWidth, totalsRowY + totalsRowH)
+                .stroke();
+            // Top border (thicker line to separate from data)
+            doc.strokeColor(DARK).lineWidth(1);
+            doc.moveTo(margin, totalsRowY)
+                .lineTo(margin + contentWidth, totalsRowY)
+                .stroke();
+            // Bottom border
+            doc.strokeColor(BORDER).lineWidth(0.5);
+            doc.moveTo(margin, totalsRowY + totalsRowH)
+                .lineTo(margin + contentWidth, totalsRowY + totalsRowH)
+                .stroke();
+            doc.restore();
+
+            // Text content - "Total" label in left column and total amount in Amount column
+            doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
+            doc.text("Total", margin + 8, totalsRowY + 7, { width: col1 - 16 });
+            doc.text(formatCurrency(totalAmount), margin + col1 + col2 + col3 + 8, totalsRowY + 7, { width: col4 - 16, align: "right" });
+            y += totalsRowH;
         }
 
         doc.end();
@@ -1050,14 +1098,14 @@ const renderJobPdf = (report) =>
         // JOB DETAILS TABLE
         // ═══════════════════════════════════════════════════════════
         const tableTop = y;
-        const col1 = 55;    // Created
-        const col2 = 105;   // Job
-        const col3 = 80;    // Customer
-        const col4 = 50;    // Plate
-        const col5 = 50;    // Status
-        const col6 = 50;    // Invoice
-        const col7 = 105; // Amount (needs more space for currency)
-        const rowH = 22;
+        const col1 = 50;    // Created
+        const col2 = 80;    // Job
+        const col3 = 100;   // Customer
+        const col4 = 45;    // Plate
+        const col5 = 45;    // Status
+        const col6 = 60;    // Invoice
+        const col7 = 100;   // Amount (needs more space for currency)
+        const rowH = 26;
 
         // Header with attractive grid
         const headerY = y;
@@ -1092,13 +1140,13 @@ const renderJobPdf = (report) =>
         doc.restore();
         
         doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-        doc.text("Created", margin + 8, headerY + 7, { width: col1 - 16 });
-        doc.text("Job", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
-        doc.text("Customer", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16 });
-        doc.text("Plate", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16 });
-        doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "center" });
-        doc.text("Invoice", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 7, { width: col6 - 16 });
-        doc.text("Amount", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 7, { width: col7 - 16, align: "right" });
+        doc.text("Created", margin + 8, headerY + 9, { width: col1 - 16 });
+        doc.text("Job", margin + col1 + 8, headerY + 9, { width: col2 - 16 });
+        doc.text("Customer", margin + col1 + col2 + 8, headerY + 9, { width: col3 - 16 });
+        doc.text("Plate", margin + col1 + col2 + col3 + 8, headerY + 9, { width: col4 - 16 });
+        doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, headerY + 9, { width: col5 - 16, align: "center" });
+        doc.text("Invoice", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 9, { width: col6 - 16 });
+        doc.text("Amount", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 9, { width: col7 - 16, align: "right" });
         y += rowH;
 
         // Rows with attractive grid
@@ -1149,13 +1197,13 @@ const renderJobPdf = (report) =>
             
             // Text content
             doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(created, rowX + 8, rowY + 7, { width: col1 - 16 });
-            doc.text(job, rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
-            doc.text(customer, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16 });
-            doc.text(plate, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16 });
-            doc.text(status, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "center" });
-            doc.text(invoice, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 7, { width: col6 - 16 });
-            doc.text(amount, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 7, { width: col7 - 16, align: "right" });
+            doc.text(created, rowX + 8, rowY + 9, { width: col1 - 16 });
+            doc.text(job, rowX + col1 + 8, rowY + 9, { width: col2 - 16 });
+            doc.text(customer, rowX + col1 + col2 + 8, rowY + 9, { width: col3 - 16 });
+            doc.text(plate, rowX + col1 + col2 + col3 + 8, rowY + 9, { width: col4 - 16 });
+            doc.text(status, rowX + col1 + col2 + col3 + col4 + 8, rowY + 9, { width: col5 - 16, align: "center" });
+            doc.text(invoice, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 9, { width: col6 - 16 });
+            doc.text(amount, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 9, { width: col7 - 16, align: "right" });
             y += rowH;
         };
 
@@ -1207,32 +1255,32 @@ const renderJobPdf = (report) =>
                     doc.restore();
                     
                     doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-                    doc.text("Created", margin + 8, newHeaderY + 7, { width: col1 - 16 });
-                    doc.text("Job", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
-                    doc.text("Customer", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16 });
-                    doc.text("Plate", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16 });
-                    doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "center" });
-                    doc.text("Invoice", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 7, { width: col6 - 16 });
-                    doc.text("Amount", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 7, { width: col7 - 16, align: "right" });
+                    doc.text("Created", margin + 8, newHeaderY + 9, { width: col1 - 16 });
+                    doc.text("Job", margin + col1 + 8, newHeaderY + 9, { width: col2 - 16 });
+                    doc.text("Customer", margin + col1 + col2 + 8, newHeaderY + 9, { width: col3 - 16 });
+                    doc.text("Plate", margin + col1 + col2 + col3 + 8, newHeaderY + 9, { width: col4 - 16 });
+                    doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 9, { width: col5 - 16, align: "center" });
+                    doc.text("Invoice", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 9, { width: col6 - 16 });
+                    doc.text("Amount", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 9, { width: col7 - 16, align: "right" });
                     y += rowH;
                 }
 
                 const description = job.description || "—";
                 const truncatedDesc = description.length > 25 ? description.substring(0, 22) + "…" : description;
                 const customer = job.customer_name || "Walk-in";
-                const truncatedCustomer = customer.length > 18 ? customer.substring(0, 15) + "…" : customer;
+                // No truncation for customer name - show full name
                 const plate = job.plate || "—";
                 const truncatedPlate = plate.length > 10 ? plate.substring(0, 7) + "…" : plate;
                 const invoice = job.invoice_no || "—";
-                const truncatedInvoice = invoice.length > 12 ? invoice.substring(0, 9) + "…" : invoice;
+                // No truncation for invoice number - show full invoice number
                 
                 drawRow(
                     formatDate(job.created_at),
                     truncatedDesc,
-                    truncatedCustomer,
+                    customer,
                     truncatedPlate,
                     job.job_status || "—",
-                    truncatedInvoice,
+                    invoice,
                     job.final_total ? formatCurrency(job.final_total) : "—",
                     i % 2 === 0
                 );
@@ -1347,11 +1395,10 @@ const renderInventoryPdf = (report) =>
         const col3 = 45;    // Qty
         const col4 = 50;    // Unit
         const col5 = 60;    // Unit Cost
-        const col6 = 50;    // Reorder
-        const col7 = 45;    // Used
-        const col8 = 35;    // Low
-        const col9 = 100;   // Notes
-        const rowH = 22;
+        const col6 = 50;    // Min Qty
+        const col7 = 35;    // Low
+        const col8 = 100;   // Notes
+        const rowH = 26;
 
         // Header with attractive grid
         const headerY = y;
@@ -1367,7 +1414,6 @@ const renderInventoryPdf = (report) =>
             { x: margin + col1 + col2 + col3 + col4 + col5, width: col6 },
             { x: margin + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
             { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7, width: col8 },
-            { x: margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8, width: col9 },
         ];
         
         doc.save();
@@ -1388,19 +1434,18 @@ const renderInventoryPdf = (report) =>
         doc.restore();
         
         doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-        doc.text("Item", margin + 8, headerY + 7, { width: col1 - 16 });
-        doc.text("Type", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
-        doc.text("Qty", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16, align: "center" });
-        doc.text("Unit", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16 });
-        doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "right" });
-        doc.text("Reorder", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 7, { width: col6 - 16, align: "center" });
-        doc.text("Used", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 7, { width: col7 - 16, align: "center" });
-        doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, headerY + 7, { width: col8 - 16, align: "center" });
-        doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, headerY + 7, { width: col9 - 16 });
+        doc.text("Item", margin + 8, headerY + 9, { width: col1 - 16 });
+        doc.text("Type", margin + col1 + 8, headerY + 9, { width: col2 - 16 });
+        doc.text("Qty", margin + col1 + col2 + 8, headerY + 9, { width: col3 - 16, align: "center" });
+        doc.text("Unit", margin + col1 + col2 + col3 + 8, headerY + 9, { width: col4 - 16 });
+        doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, headerY + 9, { width: col5 - 16, align: "right" });
+        doc.text("Min Qty", margin + col1 + col2 + col3 + col4 + col5 + 8, headerY + 9, { width: col6 - 16, align: "center" });
+        doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, headerY + 9, { width: col7 - 16, align: "center" });
+        doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, headerY + 9, { width: col8 - 16 });
         y += rowH;
 
         // Rows with attractive grid
-        const drawRow = (item, type, qty, unit, unitCost, reorder, used, low, notes, alt) => {
+        const drawRow = (item, type, qty, unit, unitCost, reorder, low, notes, alt) => {
             const rowX = margin;
             const rowY = y;
             
@@ -1421,7 +1466,6 @@ const renderInventoryPdf = (report) =>
                 { x: rowX + col1 + col2 + col3 + col4 + col5, width: col6 },
                 { x: rowX + col1 + col2 + col3 + col4 + col5 + col6, width: col7 },
                 { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7, width: col8 },
-                { x: rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8, width: col9 },
             ];
             
             // Draw vertical grid lines
@@ -1449,15 +1493,14 @@ const renderInventoryPdf = (report) =>
             
             // Text content
             doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(item, rowX + 8, rowY + 7, { width: col1 - 16 });
-            doc.text(type, rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
-            doc.text(qty, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16, align: "center" });
-            doc.text(unit, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16 });
-            doc.text(unitCost, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "right" });
-            doc.text(reorder, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 7, { width: col6 - 16, align: "center" });
-            doc.text(used, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 7, { width: col7 - 16, align: "center" });
-            doc.text(low, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, rowY + 7, { width: col8 - 16, align: "center" });
-            doc.text(notes, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, rowY + 7, { width: col9 - 16 });
+            doc.text(item, rowX + 8, rowY + 9, { width: col1 - 16 });
+            doc.text(type, rowX + col1 + 8, rowY + 9, { width: col2 - 16 });
+            doc.text(qty, rowX + col1 + col2 + 8, rowY + 9, { width: col3 - 16, align: "center" });
+            doc.text(unit, rowX + col1 + col2 + col3 + 8, rowY + 9, { width: col4 - 16 });
+            doc.text(unitCost, rowX + col1 + col2 + col3 + col4 + 8, rowY + 9, { width: col5 - 16, align: "right" });
+            doc.text(reorder, rowX + col1 + col2 + col3 + col4 + col5 + 8, rowY + 9, { width: col6 - 16, align: "center" });
+            doc.text(low, rowX + col1 + col2 + col3 + col4 + col5 + col6 + 8, rowY + 9, { width: col7 - 16, align: "center" });
+            doc.text(notes, rowX + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, rowY + 9, { width: col8 - 16 });
             y += rowH;
         };
 
@@ -1509,15 +1552,14 @@ const renderInventoryPdf = (report) =>
                     doc.restore();
                     
                     doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-                    doc.text("Item", margin + 8, newHeaderY + 7, { width: col1 - 16 });
-                    doc.text("Type", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
-                    doc.text("Qty", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16, align: "center" });
-                    doc.text("Unit", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16 });
-                    doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "right" });
-                    doc.text("Reorder", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 7, { width: col6 - 16, align: "center" });
-                    doc.text("Used", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 7, { width: col7 - 16, align: "center" });
-                    doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, newHeaderY + 7, { width: col8 - 16, align: "center" });
-                    doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + 8, newHeaderY + 7, { width: col9 - 16 });
+                    doc.text("Item", margin + 8, newHeaderY + 9, { width: col1 - 16 });
+                    doc.text("Type", margin + col1 + 8, newHeaderY + 9, { width: col2 - 16 });
+                    doc.text("Qty", margin + col1 + col2 + 8, newHeaderY + 9, { width: col3 - 16, align: "center" });
+                    doc.text("Unit", margin + col1 + col2 + col3 + 8, newHeaderY + 9, { width: col4 - 16 });
+                    doc.text("Unit Cost", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 9, { width: col5 - 16, align: "right" });
+                    doc.text("Min Qty", margin + col1 + col2 + col3 + col4 + col5 + 8, newHeaderY + 9, { width: col6 - 16, align: "center" });
+                    doc.text("Low", margin + col1 + col2 + col3 + col4 + col5 + col6 + 8, newHeaderY + 9, { width: col7 - 16, align: "center" });
+                    doc.text("Notes", margin + col1 + col2 + col3 + col4 + col5 + col6 + col7 + 8, newHeaderY + 9, { width: col8 - 16 });
                     y += rowH;
                 }
 
@@ -1529,7 +1571,6 @@ const renderInventoryPdf = (report) =>
                 const truncatedUnit = unit.length > 10 ? unit.substring(0, 7) + "…" : unit;
                 const unitCost = item.unit_cost ? formatCurrency(item.unit_cost) : "—";
                 const reorder = item.reorder_level ?? "—";
-                const used = `${item.total_used}`;
                 const low = item.low_stock ? "Yes" : "No";
                 const notes = item.description || "—";
                 const truncatedNotes = notes.length > 20 ? notes.substring(0, 17) + "…" : notes;
@@ -1541,7 +1582,6 @@ const renderInventoryPdf = (report) =>
                     truncatedUnit,
                     unitCost,
                     `${reorder}`,
-                    used,
                     low,
                     truncatedNotes,
                     i % 2 === 0
@@ -1987,7 +2027,7 @@ const renderInventoryExcel = async (report) => {
     setPrintSetup(summarySheet, { landscape: false });
     applyTableBorders(summarySheet);
     
-    // Details Sheet (match Inventory PDF table: Item, Type, Qty, Unit, Unit Cost, Reorder, Used, Low, Notes)
+    // Details Sheet (match Inventory PDF table: Item, Type, Qty, Unit, Unit Cost, Min Qty, Low, Notes)
     const detailsSheet = workbook.addWorksheet("Inventory Details");
     const pdfHeaders = [
         "Item",
@@ -1995,7 +2035,7 @@ const renderInventoryExcel = async (report) => {
         "Qty",
         "Unit",
         "Unit Cost",
-        "Reorder",
+        "Min Qty",
         "Low",
         "Notes",
         "Created",

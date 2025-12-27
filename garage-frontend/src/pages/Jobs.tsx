@@ -210,7 +210,6 @@ const Jobs = () => {
   const [initialAmount, setInitialAmount] = useState("");
   const [advanceAmount, setAdvanceAmount] = useState("");
   const [mileage, setMileage] = useState("");
-  const [mileageUnit, setMileageUnit] = useState<"km" | "m">("km");
   const [jobStatus, setJobStatus] = useState<JobStatus>("Pending");
   const [jobCategory, setJobCategory] = useState<string>(JOB_CATEGORY_OPTIONS[0]);
   const [assignedTechnicians, setAssignedTechnicians] = useState<number[]>([]);
@@ -286,7 +285,6 @@ const Jobs = () => {
     setInitialAmount("");
     setAdvanceAmount("");
     setMileage("");
-    setMileageUnit("km");
     setJobStatus("Pending");
     setJobCategory(JOB_CATEGORY_OPTIONS[0]);
     setAssignedTechnicians([]);
@@ -425,9 +423,8 @@ const Jobs = () => {
         });
         return;
       }
-      // Convert to kilometers (database stores in km)
-      // If input is in meters, divide by 1000; if in km, use as is
-      parsedMileage = mileageUnit === "m" ? mileageValue / 1000 : mileageValue;
+      // Database stores in kilometers
+      parsedMileage = mileageValue;
     }
 
     const payload: CreateJobPayload = {
@@ -650,7 +647,6 @@ const Jobs = () => {
     const initialRaw = String(formData.get("initial_amount") || "").trim();
     const advanceRaw = String(formData.get("advance_amount") || "").trim();
     const mileageRaw = String(formData.get("mileage") || "").trim();
-    const mileageUnitRaw = String(formData.get("mileage_unit") || "km");
 
     if (!descriptionRaw) {
       toast({
@@ -700,8 +696,8 @@ const Jobs = () => {
         });
         return;
       }
-      // Convert to kilometers (database stores in km)
-      mileage = mileageUnitRaw === "m" ? mileageValue / 1000 : mileageValue;
+      // Database stores in kilometers
+      mileage = mileageValue;
     }
 
     updateJobMutation.mutate({
@@ -906,28 +902,16 @@ const Jobs = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="mileage">Mileage</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="mileage"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 50000000"}
-                      value={mileage}
-                      onChange={(event) => setMileage(event.target.value)}
-                      className="flex-1"
-                    />
-                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "m")}>
-                      <SelectTrigger className="w-[120px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="km">Kilometers</SelectItem>
-                        <SelectItem value="m">Meters</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  <Label htmlFor="mileage">Mileage (Kilometers)</Label>
+                  <Input
+                    id="mileage"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="e.g. 50000"
+                    value={mileage}
+                    onChange={(event) => setMileage(event.target.value)}
+                  />
                 </div>
                 </div>
 
@@ -1420,35 +1404,20 @@ const Jobs = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="editMileage">Mileage</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="editMileage"
-                      name="mileage"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      defaultValue={
-                        selectedJob.mileage !== null && selectedJob.mileage !== undefined
-                          ? selectedJob.mileage
-                          : undefined
-                      }
-                      placeholder="e.g. 50000"
-                      className="flex-1"
-                    />
-                    <Select
-                      name="mileage_unit"
-                      defaultValue="km"
-                    >
-                      <SelectTrigger className="w-[120px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="km">Kilometers</SelectItem>
-                        <SelectItem value="m">Meters</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  <Label htmlFor="editMileage">Mileage (Kilometers)</Label>
+                  <Input
+                    id="editMileage"
+                    name="mileage"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    defaultValue={
+                      selectedJob.mileage !== null && selectedJob.mileage !== undefined
+                        ? selectedJob.mileage
+                        : undefined
+                    }
+                    placeholder="e.g. 50000"
+                  />
                 </div>
                 </div>
               <div className="space-y-2">
