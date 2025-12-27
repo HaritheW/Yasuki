@@ -76,6 +76,8 @@ type InventoryReport = {
     description: string | null;
     total_used: number;
     low_stock: number;
+    created_at: string | null;
+    updated_at: string | null;
   }[];
 };
 
@@ -189,6 +191,15 @@ const formatDisplayDate = (date?: Date | null) =>
       }).format(date)
     : "—";
 
+const formatDisplayDateTime = (date?: Date | null) =>
+  date
+    ? new Intl.DateTimeFormat("en-GB", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(date)
 const SL_TIMEZONE = "Asia/Colombo";
 const formatSriLankaDate = (date?: Date | null) =>
   date
@@ -1181,40 +1192,48 @@ const Reports = () => {
                     <table className="w-full text-sm">
                       <thead className="text-left text-muted-foreground">
                         <tr>
-                          <th className="py-2 pr-3">Item</th>
-                          <th className="py-2 pr-3">Type</th>
-                          <th className="py-2 pr-3 text-right">Qty</th>
-                          <th className="py-2 pr-3">Unit</th>
-                          <th className="py-2 pr-3 text-right">Unit Cost</th>
-                          <th className="py-2 pr-3 text-right">Reorder</th>
-                          <th className="py-2 pr-3 text-right">Used</th>
-                          <th className="py-2 pr-3">Status</th>
-                          <th className="py-2 pr-3">Notes</th>
+                          <th className="py-4 pr-3">Item</th>
+                          <th className="py-4 pr-3">Type</th>
+                          <th className="py-4 pr-3 text-right">Qty</th>
+                          <th className="py-4 pr-3">Unit</th>
+                          <th className="py-4 pr-3 text-right">Unit Cost</th>
+                          <th className="py-4 pr-3 text-right">Reorder</th>
+                          <th className="py-4 pr-3 text-right">Used</th>
+                          <th className="py-4 pr-3">Status</th>
+                          <th className="py-4 pr-3">Notes</th>
+                          <th className="py-4 pr-3">Created</th>
+                          <th className="py-4 pr-3">Updated</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(inventoryReport?.items ?? []).slice(0, 80).map((item) => (
                           <tr key={item.id} className="border-top border-border/60">
-                            <td className="py-2 pr-3">{item.name}</td>
-                            <td className="py-2 pr-3">{item.type}</td>
-                            <td className="py-2 pr-3 text-right">{item.quantity}</td>
-                            <td className="py-2 pr-3">{item.unit || <span className="text-muted-foreground">—</span>}</td>
-                            <td className="py-2 pr-3 text-right">
+                            <td className="py-4 pr-3">{item.name}</td>
+                            <td className="py-4 pr-3">{item.type}</td>
+                            <td className="py-4 pr-3 text-right">{item.quantity}</td>
+                            <td className="py-4 pr-3">{item.unit || <span className="text-muted-foreground">—</span>}</td>
+                            <td className="py-4 pr-3 text-right">
                               {item.unit_cost
                                 ? item.unit_cost.toLocaleString(undefined, { minimumFractionDigits: 2 })
                                 : <span className="text-muted-foreground">—</span>}
                             </td>
-                            <td className="py-2 pr-3 text-right">{item.reorder_level ?? <span className="text-muted-foreground">—</span>}</td>
-                            <td className="py-2 pr-3 text-right">{item.total_used}</td>
-                            <td className="py-2 pr-3">
+                            <td className="py-4 pr-3 text-right">{item.reorder_level ?? <span className="text-muted-foreground">—</span>}</td>
+                            <td className="py-4 pr-3 text-right">{item.total_used}</td>
+                            <td className="py-4 pr-3">
                               {item.low_stock ? (
                                 <Badge variant="destructive">Low</Badge>
                               ) : (
                                 <Badge variant="outline">OK</Badge>
                               )}
                             </td>
-                            <td className="py-2 pr-3 max-w-[200px] truncate" title={item.description || "—"}>
+                            <td className="py-4 pr-3 max-w-[200px] truncate" title={item.description || "—"}>
                               {item.description || <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="py-4 pr-3">
+                              {item.created_at ? formatDisplayDateTime(new Date(item.created_at)) : <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="py-4 pr-3">
+                              {item.updated_at ? formatDisplayDateTime(new Date(item.updated_at)) : <span className="text-muted-foreground">—</span>}
                             </td>
                           </tr>
                         ))}
