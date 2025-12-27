@@ -940,16 +940,6 @@ const Jobs = () => {
                       </SelectContent>
                     </Select>
                   </div>
-                  <Label htmlFor="mileage">Mileage (Kilometers)</Label>
-                  <Input
-                    id="mileage"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    placeholder="e.g. 50000"
-                    value={mileage}
-                    onChange={(event) => setMileage(event.target.value)}
-                  />
                 </div>
                 </div>
 
@@ -1474,20 +1464,6 @@ const Jobs = () => {
                       </SelectContent>
                     </Select>
                   </div>
-                  <Label htmlFor="editMileage">Mileage (Kilometers)</Label>
-                  <Input
-                    id="editMileage"
-                    name="mileage"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    defaultValue={
-                      selectedJob.mileage !== null && selectedJob.mileage !== undefined
-                        ? selectedJob.mileage
-                        : undefined
-                    }
-                    placeholder="e.g. 50000"
-                  />
                 </div>
                 </div>
 
