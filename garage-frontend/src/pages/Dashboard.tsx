@@ -648,7 +648,6 @@ const Dashboard = () => {
                     name="email"
                     type="email"
                     placeholder="email@example.com"
-                    required
                   />
                 </div>
                 <div className="space-y-2">
