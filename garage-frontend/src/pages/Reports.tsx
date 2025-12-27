@@ -200,6 +200,8 @@ const formatDisplayDateTime = (date?: Date | null) =>
         hour: "2-digit",
         minute: "2-digit",
       }).format(date)
+    : "—";
+
 const SL_TIMEZONE = "Asia/Colombo";
 const formatSriLankaDate = (date?: Date | null) =>
   date

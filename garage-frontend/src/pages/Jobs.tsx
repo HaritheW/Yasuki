@@ -711,9 +711,6 @@ const Jobs = () => {
         });
         return;
       }
-      // Convert to kilometers (database stores in km)
-      // If input is in miles, multiply by 1.60934; if in km, use as is
-      mileage = mileageUnitRaw === "mi" ? mileageValue * 1.60934 : mileageValue;
       // Database stores in kilometers
       mileage = mileageValue;
     }
