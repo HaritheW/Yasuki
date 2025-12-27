@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
-const { createNotification } = require("../utils/notifications");
+const { createNotification, notifyLowStockIfNeeded } = require("../utils/notifications");
 
 const VALID_JOB_STATUSES = ["Pending", "In Progress", "Completed", "Cancelled"];
 const VALID_ITEM_TYPES = ["consumable", "non-consumable", "bulk"];
@@ -85,6 +85,38 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
     const invoiceNo = await generateInvoiceNumber();
     const totals = computeInvoiceTotals(charges, extras);
 
+    // Validate and plan inventory deductions for consumables (avoid negative stock).
+    const consumableUsage = new Map();
+    for (const charge of charges) {
+        const inventoryId = charge?.inventory_item_id ?? null;
+        const type = (charge?.type ?? "consumable").toLowerCase();
+        const qty = Number(charge?.quantity ?? 1) || 0;
+        if (!inventoryId || type !== "consumable" || qty <= 0) continue;
+        consumableUsage.set(inventoryId, (consumableUsage.get(inventoryId) || 0) + qty);
+    }
+
+    if (consumableUsage.size) {
+        for (const [inventoryId, plannedQty] of consumableUsage.entries()) {
+            const item = await getAsync(
+                `SELECT id, name, quantity FROM InventoryItems WHERE id = ?`,
+                [inventoryId]
+            );
+            if (!item) {
+                const notFoundError = new Error(`Inventory item ${inventoryId} not found`);
+                notFoundError.status = 404;
+                throw notFoundError;
+            }
+            const available = Number(item.quantity ?? 0);
+            if (plannedQty > available) {
+                const err = new Error(
+                    `Insufficient stock for ${item.name || `item #${inventoryId}`}. Available ${available}, needed ${plannedQty}.`
+                );
+                err.status = 400;
+                throw err;
+            }
+        }
+    }
+
     const insertInvoiceResult = await runAsync(
         `
         INSERT INTO Invoices (
@@ -106,6 +138,7 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
     );
 
     const invoiceId = insertInvoiceResult.lastID;
+    const consumableMovements = [];
 
     for (const charge of charges) {
         await runAsync(
@@ -123,6 +156,25 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
                 charge.type ?? "consumable",
             ]
         );
+
+        const inventoryId = charge?.inventory_item_id ?? null;
+        const type = (charge?.type ?? "consumable").toLowerCase();
+        const qty = Number(charge?.quantity ?? 1) || 0;
+        if (inventoryId && type === "consumable" && qty > 0) {
+            await runAsync(
+                `
+                UPDATE InventoryItems
+                SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            `,
+                [qty, inventoryId]
+            );
+            consumableMovements.push({
+                itemId: inventoryId,
+                itemName: charge.item_name || `Item #${inventoryId}`,
+                quantity: qty,
+            });
+        }
     }
 
     for (const extra of extras) {
@@ -136,6 +188,24 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
     }
 
     const invoice = await getAsync("SELECT * FROM Invoices WHERE id = ?", [invoiceId]);
+
+    if (consumableMovements.length) {
+        for (const movement of consumableMovements) {
+            await notifyLowStockIfNeeded(movement.itemId);
+        }
+
+        const formatQuantity = (qty) => (Number.isInteger(qty) ? qty : qty.toFixed(2));
+        const summary = consumableMovements
+            .map((movement) => `${formatQuantity(movement.quantity)} x ${movement.itemName}`)
+            .join(", ");
+
+        await createNotification({
+            title: "Inventory used",
+            message: `${summary} deducted for invoice ${invoiceNo}.`,
+            type: "stock-usage",
+        });
+    }
+
     return {
         ...invoice,
         charges,
