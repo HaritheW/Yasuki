@@ -14,7 +14,7 @@ import { apiFetch, API_BASE_URL } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import { Badge } from "@/components/ui/badge";
 
-type ReportType = "revenue" | "expense" | "job" | "inventory";
+type ReportType = "revenue" | "expense" | "job" | "inventory" | "supplierPurchase";
 type TimeframeOption = "daily" | "monthly" | "yearly" | "custom";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
@@ -76,6 +76,29 @@ type InventoryReport = {
     description: string | null;
     total_used: number;
     low_stock: number;
+  }[];
+};
+
+type SupplierPurchaseReport = {
+  range: { startDate: string; endDate: string; label?: string };
+  totals: { purchaseCount: number; totalAmount: number; paidAmount: number; unpaidAmount: number };
+  topSuppliers: { supplier_id: number; supplier_name: string | null; purchaseCount: number; totalAmount: number }[];
+  topItems: { item_name: string; purchaseCount: number; totalQty: number; totalAmount: number }[];
+  purchases: {
+    id: number;
+    supplier_id: number;
+    supplier_name: string | null;
+    inventory_item_id: number | null;
+    item_name: string;
+    quantity: number;
+    unit_cost: number;
+    line_total: number;
+    payment_status: string | null;
+    payment_method: string | null;
+    purchase_date: string;
+    purchase_ts?: string | null;
+    notes: string | null;
+    created_at: string;
   }[];
 };
 
@@ -164,6 +187,16 @@ const formatDisplayDate = (date?: Date | null) =>
         month: "2-digit",
         year: "2-digit",
       }).format(date)
+    : "—";
+
+const SL_TIMEZONE = "Asia/Colombo";
+const formatSriLankaDate = (date?: Date | null) =>
+  date
+    ? new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", timeZone: SL_TIMEZONE }).format(date)
+    : "—";
+const formatSriLankaTime = (date?: Date | null) =>
+  date
+    ? new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: SL_TIMEZONE }).format(date)
     : "—";
 
 const toISODateLocal = (date: Date | null | undefined) => {
@@ -319,6 +352,7 @@ const Reports = () => {
   const jobQueryEnabled = reportType === "job" && hasRange;
   const inventoryQueryEnabled = reportType === "inventory" && hasRange;
   const revenueQueryEnabled = reportType === "revenue" && hasRange;
+  const supplierPurchaseQueryEnabled = reportType === "supplierPurchase" && hasRange;
 
   const { data: expenseReport, isFetching: isLoadingExpense } = useQuery({
     queryKey: ["expense-report", timeframe, activeStartDate, activeEndDate],
@@ -348,6 +382,12 @@ const Reports = () => {
     queryFn: () => apiFetch<RevenueReport>(`/reports/revenue?${buildParams().toString()}`),
   });
 
+  const { data: supplierPurchaseReport, isFetching: isLoadingSupplierPurchases } = useQuery({
+    queryKey: ["supplier-purchase-report", timeframe, activeStartDate, activeEndDate],
+    enabled: supplierPurchaseQueryEnabled,
+    queryFn: () => apiFetch<SupplierPurchaseReport>(`/reports/supplier-purchases?${buildParams().toString()}`),
+  });
+
   const [isDownloading, setIsDownloading] = useState(false);
 
   const handleDownload = async (type: ReportType) => {
@@ -373,6 +413,13 @@ const Reports = () => {
       });
       return;
     }
+    if (type === "supplierPurchase" && !supplierPurchaseQueryEnabled) {
+      toast({
+        title: "Pick a date range",
+        description: "Select a period to generate the supplier purchase report PDF.",
+      });
+      return;
+    }
     try {
       setIsDownloading(true);
       const endpoint =
@@ -384,6 +431,8 @@ const Reports = () => {
               ? "inventory"
               : type === "revenue"
                 ? "revenue"
+                : type === "supplierPurchase"
+                  ? "supplier-purchases"
                 : null;
       if (!endpoint) {
         toast({ title: "Not available yet", description: "PDF export is not ready for this report." });
@@ -464,6 +513,13 @@ const Reports = () => {
       });
       return;
     }
+    if (type === "supplierPurchase" && !supplierPurchaseQueryEnabled) {
+      toast({
+        title: "Pick a date range",
+        description: "Select a period to generate the supplier purchase report Excel.",
+      });
+      return;
+    }
     try {
       setIsDownloading(true);
       const endpoint =
@@ -475,6 +531,8 @@ const Reports = () => {
               ? "inventory"
               : type === "revenue"
                 ? "revenue"
+                : type === "supplierPurchase"
+                  ? "supplier-purchases"
               : null;
       if (!endpoint) {
         toast({ title: "Not available yet", description: "Excel export is not ready for this report." });
@@ -573,6 +631,7 @@ const Reports = () => {
                 <SelectItem value="expense">Expense Report</SelectItem>
                 <SelectItem value="job">Job Summary</SelectItem>
                 <SelectItem value="inventory">Inventory Report</SelectItem>
+                <SelectItem value="supplierPurchase">Supplier Purchase Report</SelectItem>
               </SelectContent>
             </Select>
           </CardContent>
@@ -1172,6 +1231,172 @@ const Reports = () => {
                     <p className="text-sm text-muted-foreground">No inventory records found.</p>
                   )
                 )}
+            </CardContent>
+          </Card>
+        </>
+      ) : reportType === "supplierPurchase" ? (
+        <>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Card>
+              <CardHeader>
+                <CardTitle>Supplier Purchases</CardTitle>
+                <CardDescription>
+                  {isLoadingSupplierPurchases ? "Loading..." : "Purchases recorded in the selected period"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-3xl font-bold">
+                  {supplierPurchaseReport ? supplierPurchaseReport.totals.purchaseCount : "—"}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Total:{" "}
+                  {supplierPurchaseReport
+                    ? `LKR ${supplierPurchaseReport.totals.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                    : "—"}
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Paid</CardTitle>
+                <CardDescription>Amount paid to suppliers</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-success">
+                  {supplierPurchaseReport
+                    ? `LKR ${supplierPurchaseReport.totals.paidAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                    : "—"}
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Unpaid</CardTitle>
+                <CardDescription>Amount still due</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-bold text-destructive">
+                  {supplierPurchaseReport
+                    ? `LKR ${supplierPurchaseReport.totals.unpaidAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                    : "—"}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Top Suppliers</CardTitle>
+                <CardDescription>Ordered by total spend</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {isLoadingSupplierPurchases && <p className="text-sm text-muted-foreground">Loading...</p>}
+                {!isLoadingSupplierPurchases && !(supplierPurchaseReport?.topSuppliers?.length ?? 0) && (
+                  <p className="text-sm text-muted-foreground">No purchases for this period.</p>
+                )}
+                {(supplierPurchaseReport?.topSuppliers ?? []).slice(0, 6).map((s) => (
+                  <div key={s.supplier_id} className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">{s.supplier_name || `Supplier #${s.supplier_id}`}</p>
+                      <p className="text-xs text-muted-foreground">{s.purchaseCount} purchase(s)</p>
+                    </div>
+                    <p className="font-semibold">
+                      LKR {Number(s.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Top Items</CardTitle>
+                <CardDescription>Ordered by total spend</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {isLoadingSupplierPurchases && <p className="text-sm text-muted-foreground">Loading...</p>}
+                {!isLoadingSupplierPurchases && !(supplierPurchaseReport?.topItems?.length ?? 0) && (
+                  <p className="text-sm text-muted-foreground">No purchases for this period.</p>
+                )}
+                {(supplierPurchaseReport?.topItems ?? []).slice(0, 6).map((it) => (
+                  <div key={it.item_name} className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">{it.item_name}</p>
+                      <p className="text-xs text-muted-foreground">{it.purchaseCount} purchase(s) • Qty {it.totalQty}</p>
+                    </div>
+                    <p className="font-semibold">
+                      LKR {Number(it.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Purchase Details</CardTitle>
+              <CardDescription>Detailed list for the selected range</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {isLoadingSupplierPurchases ? (
+                <p className="text-sm text-muted-foreground">Loading purchases…</p>
+              ) : supplierPurchaseReport?.purchases?.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-muted-foreground">
+                      <tr>
+                        <th className="py-2 pr-3">Date</th>
+                        <th className="py-2 pr-3">Time</th>
+                        <th className="py-2 pr-3">Supplier</th>
+                        <th className="py-2 pr-3">Item</th>
+                        <th className="py-2 pr-3 text-right">Qty</th>
+                        <th className="py-2 pr-3 text-right">Unit Cost</th>
+                        <th className="py-2 pr-3 text-right">Total</th>
+                        <th className="py-2 pr-3">Status</th>
+                        <th className="py-2 pr-3">Method</th>
+                        <th className="py-2 pr-3">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(supplierPurchaseReport.purchases ?? []).slice(0, 80).map((p) => (
+                        <tr key={p.id} className="border-top border-border/60">
+                          <td className="py-2 pr-3">{formatSriLankaDate(new Date((p as any).purchase_ts || p.purchase_date))}</td>
+                          <td className="py-2 pr-3">{formatSriLankaTime(new Date((p as any).purchase_ts || p.purchase_date))}</td>
+                          <td className="py-2 pr-3">{p.supplier_name || `Supplier #${p.supplier_id}`}</td>
+                          <td className="py-2 pr-3">{p.item_name}</td>
+                          <td className="py-2 pr-3 text-right">{Number(p.quantity || 0)}</td>
+                          <td className="py-2 pr-3 text-right">
+                            {Number(p.unit_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-2 pr-3 text-right">
+                            {Number(p.line_total || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <Badge variant="outline">{(p.payment_status || "unpaid").toUpperCase()}</Badge>
+                          </td>
+                          <td className="py-2 pr-3">
+                            {p.payment_method || <span className="text-muted-foreground">—</span>}
+                          </td>
+                          <td className="py-2 pr-3 max-w-[200px] truncate" title={p.notes || "—"}>
+                            {p.notes || <span className="text-muted-foreground">—</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {(supplierPurchaseReport?.purchases?.length ?? 0) > 80 && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Showing first 80 entries. Download PDF for the full list.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No supplier purchases found for this period.</p>
+              )}
             </CardContent>
           </Card>
         </>
