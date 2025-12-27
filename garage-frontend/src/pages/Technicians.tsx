@@ -1,7 +1,11 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+<<<<<<< Updated upstream
 import { Plus, Phone, Edit, Trash2 } from "lucide-react";
+=======
+import { Plus, Phone, Edit, Trash2, Briefcase, Calendar, User, Car } from "lucide-react";
+>>>>>>> Stashed changes
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -440,6 +444,143 @@ const Technicians = () => {
                 </div>
               </div>
 
+<<<<<<< Updated upstream
+=======
+              {/* Assigned Jobs Section */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Briefcase className="h-5 w-5 text-primary" />
+                    <h3 className="text-lg font-semibold">Assigned Jobs</h3>
+                  </div>
+                  {technicianJobs && technicianJobs.length > 0 && (
+                    <Badge variant="outline" className="text-sm">
+                      {technicianJobs.length} job{technicianJobs.length === 1 ? "" : "s"}
+                    </Badge>
+                  )}
+                </div>
+
+                {technicianJobsLoading && (
+                  <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    Loading jobs...
+                  </div>
+                )}
+
+                {technicianJobsError && !technicianJobsLoading && (
+                  <div className="rounded-md border border-destructive/50 bg-destructive/5 p-6 text-center text-sm text-destructive">
+                    Failed to load jobs. Please try again.
+                  </div>
+                )}
+
+                {!technicianJobsLoading && !technicianJobsError && (!technicianJobs || technicianJobs.length === 0) && (
+                  <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    No jobs assigned to this technician.
+                  </div>
+                )}
+
+                {!technicianJobsLoading && !technicianJobsError && technicianJobs && technicianJobs.length > 0 && (
+                  <div className="rounded-md border">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/50 text-left">
+                          <tr>
+                            <th className="p-3 font-medium">Job ID</th>
+                            <th className="p-3 font-medium">Customer</th>
+                            <th className="p-3 font-medium">Vehicle</th>
+                            <th className="p-3 font-medium">Description</th>
+                            <th className="p-3 font-medium">Status</th>
+                            <th className="p-3 font-medium">Category</th>
+                            <th className="p-3 font-medium text-right">Amount</th>
+                            <th className="p-3 font-medium">Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {technicianJobs.map((job, index) => {
+                            const statusMeta = getJobStatusBadge(job.job_status);
+                            return (
+                              <tr
+                                key={job.id}
+                                className={`border-b transition-colors ${
+                                  index % 2 === 0 ? "bg-background" : "bg-muted/20"
+                                } hover:bg-muted/50`}
+                              >
+                                <td className="p-3 font-semibold">#{job.id}</td>
+                                <td className="p-3">
+                                  <div className="flex items-center gap-2 min-w-[120px]">
+                                    <User className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                                    <span className="truncate" title={job.customer_name || `Customer #${job.customer_id}`}>
+                                      {job.customer_name || `Customer #${job.customer_id}`}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="p-3">
+                                  <div className="flex items-center gap-2 min-w-[100px]">
+                                    <Car className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                                    <span className="text-muted-foreground truncate" title={formatVehicle(job)}>
+                                      {formatVehicle(job)}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="p-3">
+                                  <span className="max-w-[180px] truncate block" title={job.description || "—"}>
+                                    {job.description || "—"}
+                                  </span>
+                                </td>
+                                <td className="p-3">
+                                  <Badge className={statusMeta.className}>{statusMeta.label}</Badge>
+                                </td>
+                                <td className="p-3 text-muted-foreground">
+                                  {job.category || "—"}
+                                </td>
+                                <td className="p-3 text-right font-semibold">
+                                  {formatCurrency(job.initial_amount)}
+                                </td>
+                                <td className="p-3 text-muted-foreground whitespace-nowrap">
+                                  <div className="flex items-center gap-1">
+                                    <Calendar className="h-3 w-3 flex-shrink-0" />
+                                    <span className="text-xs">{formatDate(job.created_at)}</span>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Job Statistics */}
+                {!technicianJobsLoading && !technicianJobsError && technicianJobs && technicianJobs.length > 0 && (
+                  <div className="grid gap-4 md:grid-cols-4 rounded-md border bg-muted/10 p-4">
+                    <div>
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">Total Jobs</Label>
+                      <p className="font-semibold text-xl mt-1">{technicianJobs.length}</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">In Progress</Label>
+                      <p className="font-semibold text-xl mt-1 text-primary">
+                        {technicianJobs.filter((j) => j.job_status === "In Progress").length}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">Pending</Label>
+                      <p className="font-semibold text-xl mt-1 text-warning">
+                        {technicianJobs.filter((j) => j.job_status === "Pending").length}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">Completed</Label>
+                      <p className="font-semibold text-xl mt-1 text-success">
+                        {technicianJobs.filter((j) => j.job_status === "Completed").length}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+>>>>>>> Stashed changes
               <div className="flex gap-3 pt-4 border-t">
                 <Button
                   variant="outline"
