@@ -2728,29 +2728,38 @@ router.get("/inventory/excel", async (req, res) => {
 
 const renderRevenuePdf = (report) =>
     new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 36, size: "A4" });
+        const doc = new PDFDocument({ margin: 50, size: "A4" });
         const chunks = [];
         doc.on("data", (chunk) => chunks.push(chunk));
         doc.on("end", () => resolve(Buffer.concat(chunks)));
         doc.on("error", reject);
 
-        const formatCurrency = (value) =>
-            `LKR ${Number(value || 0).toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-            })}`;
-        const formatDate = (value) => {
-            const parsed = new Date(value);
-            return Number.isNaN(parsed.getTime())
-                ? value
-                : parsed.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
+        // ═══════════════════════════════════════════════════════════
+        // CONFIGURATION
+        // ═══════════════════════════════════════════════════════════
+        const PRIMARY = "#B91C1C";      // Red for branding
+        const DARK = "#111827";         // Dark text
+        const GRAY = "#6B7280";         // Secondary text
+        const LIGHT = "#F9FAFB";        // Light background
+        const BORDER = "#E5E7EB";       // Borders
+        const margin = 50;
+        const pageWidth = doc.page.width;
+        const contentWidth = pageWidth - margin * 2;
+
+        // Helper functions
+        const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const formatDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+        };
+        const formatPeriodDate = (val) => {
+            if (!val) return "N/A";
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
         };
 
-        const setFont = ({ size = 10, bold = false, color = "#111827" } = {}) => {
-            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(size).fillColor(color);
-        };
-
-        const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        let y = margin;
         
         // Get values from report
         const netProfit = report.totals.netProfit ?? report.totals.revenue ?? 0;
@@ -2759,371 +2768,507 @@ const renderRevenuePdf = (report) =>
         const advances = report.totals.advances ?? 0;
         const expensesTotal = report.totals.expensesTotal ?? 0;
         const profitMargin = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100).toFixed(2) : "0.00";
-
-        // Header band with gradient effect
-        doc.save();
-        doc.rect(doc.page.margins.left, doc.page.margins.top, pageWidth, 70).fill("#0f172a");
-        doc.restore();
-        doc.moveDown(0.2);
-        setFont({ size: 24, bold: true, color: "#ffffff" });
-        doc.text("Profit Report", doc.page.margins.left + 8, doc.page.margins.top + 15);
-        setFont({ size: 11, color: "#e2e8f0" });
-        doc.text(`Period: ${report.range.startDate} → ${report.range.endDate}`, {
-            align: "left",
-            lineGap: 2,
-        });
-        doc.text(
-            `Generated: ${new Date().toLocaleDateString("en-GB", {
-                year: "numeric",
-                month: "short",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-            })}`
-        );
-        doc.moveDown(2.5);
-
-        // Net Profit - Prominent card (larger)
-        const netProfitCardWidth = pageWidth;
-        const netProfitCardHeight = 90;
-        const netProfitY = doc.y;
         const profitColor = netProfit >= 0 ? "#10b981" : "#ef4444";
-        doc.save();
-        doc.roundedRect(doc.page.margins.left, netProfitY, netProfitCardWidth, netProfitCardHeight, 10)
-            .fill(netProfit >= 0 ? "#ecfdf5" : "#fef2f2");
-        doc.restore();
-        setFont({ size: 11, color: "#6b7280" });
-        doc.text("NET PROFIT", doc.page.margins.left + 16, netProfitY + 12);
-        setFont({ size: 28, bold: true, color: profitColor });
-        doc.text(formatCurrency(netProfit), doc.page.margins.left + 16, netProfitY + 30);
-        setFont({ size: 10, color: "#6b7280" });
-        doc.text(`Profit Margin: ${profitMargin}% • Total Revenue - Total Expenses`, doc.page.margins.left + 16, netProfitY + 65);
-        doc.moveDown(6);
 
-        // Summary cards row
-        const cardWidth = (pageWidth - 16) / 4;
-        const cardHeight = 80;
-        const startY = doc.y;
-        
-        const drawCard = (x, title, value, caption, color = "#111827") => {
+        // ═══════════════════════════════════════════════════════════
+        // WATERMARK LOGO (centered, semi-transparent)
+        // ═══════════════════════════════════════════════════════════
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        if (fs.existsSync(logoPath)) {
             doc.save();
-            doc.roundedRect(x, startY, cardWidth, cardHeight, 8).fill("#f8fafc");
+            doc.opacity(0.15);
+            const logoWidth = 400;
+            const logoHeight = 230;
+            const logoX = (pageWidth - logoWidth) / 2;
+            const logoY = (doc.page.height - logoHeight) / 2;
+            doc.image(logoPath, logoX, logoY, { width: logoWidth });
             doc.restore();
-            setFont({ size: 9, color: "#6b7280" });
-            doc.text(title, x + 10, startY + 8, { width: cardWidth - 20 });
-            setFont({ size: 14, bold: true, color: color });
-            doc.text(value, x + 10, startY + 24, { width: cardWidth - 20 });
-            setFont({ size: 8, color: "#6b7280" });
-            doc.text(caption, x + 10, startY + 45, { width: cardWidth - 20 });
-        };
+            doc.opacity(1);
+        }
 
-        drawCard(
-            doc.page.margins.left,
-            "Total Revenue",
-            formatCurrency(totalRevenue),
-            `Including advances`,
-            "#10b981"
-        );
+        // ═══════════════════════════════════════════════════════════
+        // HEADER - LOGO + COMPANY DETAILS
+        // ═══════════════════════════════════════════════════════════
+        const logoSize = 50;
+        const logoX = margin;
+        
+        // Draw logo on left
+        if (fs.existsSync(logoPath)) {
+            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
+        }
+        
+        // Company details next to logo
+        const textX = margin + logoSize + 15;
+        
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
+        
+        y += logoSize + 10;
 
-        drawCard(
-            doc.page.margins.left + cardWidth + 4,
-            "Base Revenue",
-            formatCurrency(baseRevenue),
-            `From invoices`,
-            "#111827"
-        );
+        // Divider
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
+        y += 15;
 
-        drawCard(
-            doc.page.margins.left + (cardWidth + 4) * 2,
-            "Advances",
-            formatCurrency(advances),
-            advances > 0 ? `Received` : `None`,
-            "#059669"
-        );
+        // ═══════════════════════════════════════════════════════════
+        // REPORT TITLE & INFO
+        // ═══════════════════════════════════════════════════════════
+        doc.font("Helvetica-Bold").fontSize(22).fillColor(DARK);
+        doc.text("PROFIT REPORT", margin, y);
 
-        drawCard(
-            doc.page.margins.left + (cardWidth + 4) * 3,
-            "Total Expenses",
-            formatCurrency(expensesTotal),
-            `${report.expenses.length} expense${report.expenses.length === 1 ? "" : "s"}`,
-            "#ef4444"
-        );
+        // Period and generated date (right)
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        const periodText = `${formatPeriodDate(report.range.startDate)} - ${formatPeriodDate(report.range.endDate)}`;
+        doc.text(`Period: ${periodText}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
+        doc.text(`Generated: ${formatDate(new Date())}`, pageWidth - margin - 180, y + 12, { width: 180, align: "right" });
 
-        doc.moveDown(6.5);
+        y += 40;
 
-        // Revenue Breakdown Section
-        const sectionTitle = (label) => {
-            setFont({ size: 13, bold: true, color: "#0f172a" });
-            doc.text(label, { continued: false });
-            doc.moveDown(0.5);
-        };
-
-        // Revenue Breakdown
-        sectionTitle("Revenue Breakdown");
-        const breakdownY = doc.y;
-        const breakdownWidth = pageWidth;
-        const breakdownHeight = 120;
+        // ═══════════════════════════════════════════════════════════
+        // SUMMARY SECTION
+        // ═══════════════════════════════════════════════════════════
+        const summaryY = y;
+        const summaryHeight = 140;
+        
+        // Summary box
         doc.save();
-        doc.roundedRect(doc.page.margins.left, breakdownY, breakdownWidth, breakdownHeight, 8)
-            .fill("#f8fafc");
+        doc.roundedRect(margin, summaryY, contentWidth, summaryHeight, 8).fill(LIGHT);
         doc.restore();
         
-        const breakdownStartX = doc.page.margins.left + 12;
-        let breakdownCurrentY = breakdownY + 12;
+        let summaryCurrentY = summaryY + 15;
+        const summaryLeftX = margin + 15;
+        const summaryRightX = margin + contentWidth / 2 + 20;
         
-        setFont({ size: 10, color: "#475569" });
-        doc.text("Base Revenue (Invoices):", breakdownStartX, breakdownCurrentY);
-        setFont({ size: 11, bold: true, color: "#111827" });
-        doc.text(formatCurrency(baseRevenue), breakdownStartX + 180, breakdownCurrentY);
+        // Net Profit (prominent)
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(GRAY);
+        doc.text("NET PROFIT", summaryLeftX, summaryCurrentY);
+        doc.font("Helvetica-Bold").fontSize(24).fillColor(profitColor);
+        doc.text(formatCurrency(netProfit), summaryLeftX, summaryCurrentY + 15);
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text(`Profit Margin: ${profitMargin}%`, summaryLeftX, summaryCurrentY + 40);
         
-        breakdownCurrentY += 20;
+        summaryCurrentY += 60;
+        
+        // Total Revenue
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text("Total Revenue:", summaryLeftX, summaryCurrentY);
+        doc.font("Helvetica-Bold").fontSize(11).fillColor("#10b981");
+        doc.text(formatCurrency(totalRevenue), summaryLeftX + 100, summaryCurrentY);
+        
+        summaryCurrentY += 18;
+        
+        // Base Revenue
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text("Base Revenue:", summaryLeftX, summaryCurrentY);
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+        doc.text(formatCurrency(baseRevenue), summaryLeftX + 100, summaryCurrentY);
+        
+        summaryCurrentY += 18;
+        
+        // Advances
         if (advances > 0) {
-            setFont({ size: 10, color: "#475569" });
-            doc.text("Advances Received:", breakdownStartX, breakdownCurrentY);
-            setFont({ size: 11, bold: true, color: "#059669" });
-            doc.text(`+ ${formatCurrency(advances)}`, breakdownStartX + 180, breakdownCurrentY);
-            breakdownCurrentY += 20;
+            doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+            doc.text("Advances:", summaryLeftX, summaryCurrentY);
+            doc.font("Helvetica-Bold").fontSize(10).fillColor("#059669");
+            doc.text(formatCurrency(advances), summaryLeftX + 100, summaryCurrentY);
+            summaryCurrentY += 18;
         }
         
-        doc.strokeColor("#cbd5e1")
-            .moveTo(breakdownStartX, breakdownCurrentY)
-            .lineTo(breakdownStartX + breakdownWidth - 24, breakdownCurrentY)
-            .stroke();
-        breakdownCurrentY += 15;
+        // Right column
+        summaryCurrentY = summaryY + 15;
         
-        setFont({ size: 11, bold: true, color: "#0f172a" });
-        doc.text("Total Revenue:", breakdownStartX, breakdownCurrentY);
-        setFont({ size: 14, bold: true, color: "#10b981" });
-        doc.text(formatCurrency(totalRevenue), breakdownStartX + 180, breakdownCurrentY);
+        // Total Expenses
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text("Total Expenses:", summaryRightX, summaryCurrentY);
+        doc.font("Helvetica-Bold").fontSize(11).fillColor("#ef4444");
+        doc.text(formatCurrency(expensesTotal), summaryRightX + 100, summaryCurrentY);
         
-        breakdownCurrentY += 25;
-        setFont({ size: 9, color: "#64748b" });
-        doc.text("Payment Status Breakdown:", breakdownStartX, breakdownCurrentY);
-        breakdownCurrentY += 15;
+        summaryCurrentY += 18;
         
-        if (report.statuses && report.statuses.length > 0) {
-            report.statuses.forEach((status, idx) => {
-                const statusX = breakdownStartX + (idx % 3) * 180;
-                const statusY = breakdownCurrentY + Math.floor(idx / 3) * 18;
-                setFont({ size: 9, color: "#475569" });
-                doc.text(`${(status.status || "unknown").toUpperCase()}:`, statusX, statusY);
-                setFont({ size: 9, bold: true, color: "#111827" });
-                doc.text(
-                    `${status.count} • ${formatCurrency(status.total)}`,
-                    statusX + 70,
-                    statusY
-                );
-            });
-        } else {
-            setFont({ size: 9, color: "#94a3b8" });
-            doc.text("No payment status data available", breakdownStartX, breakdownCurrentY);
-        }
+        // Invoice Count
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text("Total Invoices:", summaryRightX, summaryCurrentY);
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+        doc.text(`${report.totals.invoiceCount || report.invoices.length}`, summaryRightX + 100, summaryCurrentY);
         
-        doc.y = breakdownY + breakdownHeight + 20;
+        summaryCurrentY += 18;
+        
+        // Expense Count
+        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.text("Total Expenses Count:", summaryRightX, summaryCurrentY);
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+        doc.text(`${report.expenses.length}`, summaryRightX + 100, summaryCurrentY);
+        
+        y = summaryY + summaryHeight + 20;
 
-        // Profit Calculation Section
-        sectionTitle("Profit Calculation");
-        const calcY = doc.y;
-        const calcWidth = pageWidth;
-        const calcHeight = 100;
-        doc.save();
-        doc.roundedRect(doc.page.margins.left, calcY, calcWidth, calcHeight, 8)
-            .fill("#fef3c7");
-        doc.restore();
-        
-        const calcStartX = doc.page.margins.left + 12;
-        let calcCurrentY = calcY + 12;
-        
-        setFont({ size: 10, color: "#92400e" });
-        doc.text("Total Revenue:", calcStartX, calcCurrentY);
-        setFont({ size: 11, bold: true, color: "#10b981" });
-        doc.text(formatCurrency(totalRevenue), calcStartX + 180, calcCurrentY);
-        
-        calcCurrentY += 20;
-        setFont({ size: 10, color: "#92400e" });
-        doc.text("Total Expenses:", calcStartX, calcCurrentY);
-        setFont({ size: 11, bold: true, color: "#ef4444" });
-        doc.text(`- ${formatCurrency(expensesTotal)}`, calcStartX + 180, calcCurrentY);
-        
-        calcCurrentY += 20;
-        doc.strokeColor("#fbbf24")
-            .lineWidth(2)
-            .moveTo(calcStartX, calcCurrentY)
-            .lineTo(calcStartX + calcWidth - 24, calcCurrentY)
-            .stroke();
-        calcCurrentY += 15;
-        
-        setFont({ size: 12, bold: true, color: "#92400e" });
-        doc.text("Net Profit:", calcStartX, calcCurrentY);
-        setFont({ size: 16, bold: true, color: profitColor });
-        doc.text(formatCurrency(netProfit), calcStartX + 180, calcCurrentY);
-        
-        calcCurrentY += 20;
-        setFont({ size: 9, color: "#92400e" });
-        doc.text(`Profit Margin: ${profitMargin}%`, calcStartX, calcCurrentY);
-        
-        doc.y = calcY + calcHeight + 20;
+        // ═══════════════════════════════════════════════════════════
+        // INVOICES TABLE
+        // ═══════════════════════════════════════════════════════════
+        doc.font("Helvetica-Bold").fontSize(14).fillColor(DARK);
+        doc.text("INVOICES", margin, y);
+        y += 20;
 
-        // Check if we need a new page
-        if (doc.y > doc.page.height - doc.page.margins.bottom - 200) {
-            doc.addPage();
-        }
-
-        // Invoices table
-        sectionTitle("Invoices");
         if (!report.invoices.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No invoices recorded in this period.");
+            doc.font("Helvetica").fontSize(10).fillColor(GRAY);
+            doc.text("No invoices recorded in this period.", margin, y);
+            y += 20;
         } else {
-            const widths = [70, 120, 140, 90, 70];
-            const headers = ["Date", "Invoice No", "Customer", "Amount", "Status"];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            headers.forEach((title, idx) => {
-                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
+            const tableTop = y;
+            const col1 = 70;    // Date
+            const col2 = 120;   // Invoice No
+            const col3 = 140;   // Customer
+            const col4 = 90;    // Amount
+            const col5 = 70;    // Status
+            const rowH = 22;
+
+            // Header with attractive grid
+            const headerY = y;
+            doc.rect(margin, headerY, contentWidth, rowH).fill(DARK);
+            
+            // Draw grid lines for header
+            const headerCellPositions = [
+                { x: margin, width: col1 },
+                { x: margin + col1, width: col2 },
+                { x: margin + col1 + col2, width: col3 },
+                { x: margin + col1 + col2 + col3, width: col4 },
+                { x: margin + col1 + col2 + col3 + col4, width: col5 },
+            ];
+            
+            doc.save();
+            doc.strokeColor("#1f2937").lineWidth(0.5);
+            headerCellPositions.forEach((cell, idx) => {
+                if (idx > 0) {
+                    doc.moveTo(cell.x, headerY)
+                        .lineTo(cell.x, headerY + rowH)
+                        .stroke();
+                }
             });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
+            doc.moveTo(margin + contentWidth, headerY)
+                .lineTo(margin + contentWidth, headerY + rowH)
                 .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            const maxInvoiceRows = 60;
-            const invoiceRows = report.invoices.slice(0, maxInvoiceRows);
-            invoiceRows.forEach((entry, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
+            doc.moveTo(margin, headerY + rowH)
+                .lineTo(margin + contentWidth, headerY + rowH)
+                .stroke();
+            doc.restore();
+            
+            doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+            doc.text("Date", margin + 8, headerY + 7, { width: col1 - 16 });
+            doc.text("Invoice No", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
+            doc.text("Customer", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16 });
+            doc.text("Amount", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16, align: "right" });
+            doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "center" });
+            y += rowH;
+
+            // Rows with attractive grid
+            const drawInvoiceRow = (date, invoiceNo, customer, amount, status, alt) => {
+                const rowX = margin;
+                const rowY = y;
+                
+                // Background color for alternating rows
+                if (alt) {
+                    doc.save();
+                    doc.rect(rowX, rowY, contentWidth, rowH).fill(LIGHT);
+                    doc.restore();
+                }
+                
+                // Draw grid lines
                 doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
+                doc.strokeColor(BORDER).lineWidth(0.5);
+                headerCellPositions.forEach((cell, idx) => {
+                    if (idx > 0) {
+                        doc.moveTo(cell.x, rowY)
+                            .lineTo(cell.x, rowY + rowH)
+                            .stroke();
+                    }
+                });
+                doc.moveTo(rowX + contentWidth, rowY)
+                    .lineTo(rowX + contentWidth, rowY + rowH)
+                    .stroke();
+                doc.moveTo(rowX, rowY)
+                    .lineTo(rowX + contentWidth, rowY)
+                    .stroke();
+                doc.moveTo(rowX, rowY + rowH)
+                    .lineTo(rowX + contentWidth, rowY + rowH)
+                    .stroke();
                 doc.restore();
-                const values = [
+                
+                // Text content
+                doc.font("Helvetica").fontSize(8).fillColor(DARK);
+                doc.text(date, rowX + 8, rowY + 7, { width: col1 - 16 });
+                doc.text(invoiceNo || "—", rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
+                const customerName = customer || "Walk-in";
+                const truncatedCustomer = customerName.length > 20 ? customerName.substring(0, 17) + "…" : customerName;
+                doc.text(truncatedCustomer, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16 });
+                doc.text(amount, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16, align: "right" });
+                doc.text(status, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "center" });
+                y += rowH;
+            };
+
+            const maxInvoiceRows = 250;
+            const invoiceRows = report.invoices.slice(0, maxInvoiceRows);
+            invoiceRows.forEach((entry, i) => {
+                const bottomLimit = doc.page.height - margin - 30;
+                if (y > bottomLimit) {
+                    doc.addPage();
+                    
+                    // Add watermark to new page
+                    if (fs.existsSync(logoPath)) {
+                        doc.save();
+                        doc.opacity(0.15);
+                        const logoWidth = 400;
+                        const logoHeight = 230;
+                        const logoX = (pageWidth - logoWidth) / 2;
+                        const logoY = (doc.page.height - logoHeight) / 2;
+                        doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                        doc.restore();
+                        doc.opacity(1);
+                    }
+                    
+                    // Redraw header on new page
+                    y = margin + 40;
+                    const newHeaderY = y;
+                    doc.rect(margin, newHeaderY, contentWidth, rowH).fill(DARK);
+                    
+                    doc.save();
+                    doc.strokeColor("#1f2937").lineWidth(0.5);
+                    headerCellPositions.forEach((cell, idx) => {
+                        if (idx > 0) {
+                            doc.moveTo(cell.x, newHeaderY)
+                                .lineTo(cell.x, newHeaderY + rowH)
+                                .stroke();
+                        }
+                    });
+                    doc.moveTo(margin + contentWidth, newHeaderY)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.moveTo(margin, newHeaderY + rowH)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.restore();
+                    
+                    doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+                    doc.text("Date", margin + 8, newHeaderY + 7, { width: col1 - 16 });
+                    doc.text("Invoice No", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
+                    doc.text("Customer", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16 });
+                    doc.text("Amount", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16, align: "right" });
+                    doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "center" });
+                    y += rowH;
+                }
+
+                drawInvoiceRow(
                     formatDate(entry.invoice_date),
                     entry.invoice_no || "—",
                     entry.customer_name || "Walk-in",
                     formatCurrency(entry.final_total),
                     (entry.payment_status || "unpaid").toUpperCase(),
-                ];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
+                    i % 2 === 0
+                );
             });
 
             if (report.invoices.length > maxInvoiceRows) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.invoices.length - maxInvoiceRows} more invoices not shown`, startX, doc.y);
+                doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+                doc.text(`+ ${report.invoices.length - maxInvoiceRows} more invoices not shown`, margin, y + 5);
+                y += 20;
             }
         }
 
-        doc.addPage();
-
-        // Expenses table
-        sectionTitle("Expenses");
-        if (!report.expenses.length) {
-            setFont({ size: 10, color: "#6b7280" });
-            doc.text("No expenses recorded in this period.");
-        } else {
-            const widths = [70, 170, 100, 90, 70];
-            const headers = ["Date", "Description", "Category", "Amount", "Status"];
-            const startX = doc.page.margins.left;
-            setFont({ size: 9, bold: true, color: "#475569" });
-            headers.forEach((title, idx) => {
-                const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                doc.text(title, startX + offset, doc.y, { width: widths[idx] });
-            });
-            doc.moveDown(0.3);
-            doc.strokeColor("#e2e8f0")
-                .moveTo(startX, doc.y)
-                .lineTo(startX + widths.reduce((a, b) => a + b, 0), doc.y)
-                .stroke();
-            doc.moveDown(0.2);
-            setFont({ size: 9, color: "#111827" });
-            const maxExpenseRows = 60;
-            const expenseRows = report.expenses.slice(0, maxExpenseRows);
-            expenseRows.forEach((entry, index) => {
-                const offsetY = doc.y;
-                const bg = index % 2 === 0 ? "#f8fafc" : "#ffffff";
+        // Check if we need a new page for expenses
+        if (y > doc.page.height - margin - 200) {
+            doc.addPage();
+            
+            // Add watermark to new page
+            if (fs.existsSync(logoPath)) {
                 doc.save();
-                doc.rect(startX, offsetY - 2, widths.reduce((a, b) => a + b, 0), 18).fill(bg);
+                doc.opacity(0.15);
+                const logoWidth = 400;
+                const logoHeight = 230;
+                const logoX = (pageWidth - logoWidth) / 2;
+                const logoY = (doc.page.height - logoHeight) / 2;
+                doc.image(logoPath, logoX, logoY, { width: logoWidth });
                 doc.restore();
-                const values = [
+                doc.opacity(1);
+            }
+            y = margin + 40;
+        }
+
+        // Add extra whitespace between Invoices and Expenses sections
+        y += 30;
+
+        // ═══════════════════════════════════════════════════════════
+        // EXPENSES TABLE
+        // ═══════════════════════════════════════════════════════════
+        doc.font("Helvetica-Bold").fontSize(14).fillColor(DARK);
+        doc.text("EXPENSES", margin, y);
+        y += 20;
+
+        if (!report.expenses.length) {
+            doc.font("Helvetica").fontSize(10).fillColor(GRAY);
+            doc.text("No expenses recorded in this period.", margin, y);
+            y += 20;
+        } else {
+            const tableTop = y;
+            const col1 = 70;    // Date
+            const col2 = 170;   // Description
+            const col3 = 85;    // Category
+            const col4 = 90;    // Amount
+            const col5 = 80;    // Status
+            const rowH = 22;
+
+            // Header with attractive grid
+            const headerY = y;
+            doc.rect(margin, headerY, contentWidth, rowH).fill(DARK);
+            
+            // Draw grid lines for header
+            const headerCellPositions = [
+                { x: margin, width: col1 },
+                { x: margin + col1, width: col2 },
+                { x: margin + col1 + col2, width: col3 },
+                { x: margin + col1 + col2 + col3, width: col4 },
+                { x: margin + col1 + col2 + col3 + col4, width: col5 },
+            ];
+            
+            doc.save();
+            doc.strokeColor("#1f2937").lineWidth(0.5);
+            headerCellPositions.forEach((cell, idx) => {
+                if (idx > 0) {
+                    doc.moveTo(cell.x, headerY)
+                        .lineTo(cell.x, headerY + rowH)
+                        .stroke();
+                }
+            });
+            doc.moveTo(margin + contentWidth, headerY)
+                .lineTo(margin + contentWidth, headerY + rowH)
+                .stroke();
+            doc.moveTo(margin, headerY + rowH)
+                .lineTo(margin + contentWidth, headerY + rowH)
+                .stroke();
+            doc.restore();
+            
+            doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+            doc.text("Date", margin + 8, headerY + 7, { width: col1 - 16 });
+            doc.text("Description", margin + col1 + 8, headerY + 7, { width: col2 - 16 });
+            doc.text("Category", margin + col1 + col2 + 8, headerY + 7, { width: col3 - 16 });
+            doc.text("Amount", margin + col1 + col2 + col3 + 8, headerY + 7, { width: col4 - 16, align: "right" });
+            doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, headerY + 7, { width: col5 - 16, align: "center" });
+            y += rowH;
+
+            // Rows with attractive grid
+            const drawExpenseRow = (date, desc, category, amount, status, alt) => {
+                const rowX = margin;
+                const rowY = y;
+                
+                // Background color for alternating rows
+                if (alt) {
+                    doc.save();
+                    doc.rect(rowX, rowY, contentWidth, rowH).fill(LIGHT);
+                    doc.restore();
+                }
+                
+                // Draw grid lines
+                doc.save();
+                doc.strokeColor(BORDER).lineWidth(0.5);
+                headerCellPositions.forEach((cell, idx) => {
+                    if (idx > 0) {
+                        doc.moveTo(cell.x, rowY)
+                            .lineTo(cell.x, rowY + rowH)
+                            .stroke();
+                    }
+                });
+                doc.moveTo(rowX + contentWidth, rowY)
+                    .lineTo(rowX + contentWidth, rowY + rowH)
+                    .stroke();
+                doc.moveTo(rowX, rowY)
+                    .lineTo(rowX + contentWidth, rowY)
+                    .stroke();
+                doc.moveTo(rowX, rowY + rowH)
+                    .lineTo(rowX + contentWidth, rowY + rowH)
+                    .stroke();
+                doc.restore();
+                
+                // Text content
+                doc.font("Helvetica").fontSize(8).fillColor(DARK);
+                doc.text(date, rowX + 8, rowY + 7, { width: col1 - 16 });
+                const truncatedDesc = desc.length > 35 ? desc.substring(0, 32) + "…" : desc;
+                doc.text(truncatedDesc, rowX + col1 + 8, rowY + 7, { width: col2 - 16 });
+                const truncatedCategory = category.length > 20 ? category.substring(0, 17) + "…" : category;
+                doc.text(truncatedCategory, rowX + col1 + col2 + 8, rowY + 7, { width: col3 - 16 });
+                doc.text(amount, rowX + col1 + col2 + col3 + 8, rowY + 7, { width: col4 - 16, align: "right" });
+                doc.text(status, rowX + col1 + col2 + col3 + col4 + 8, rowY + 7, { width: col5 - 16, align: "center" });
+                y += rowH;
+            };
+
+            const maxExpenseRows = 250;
+            const expenseRows = report.expenses.slice(0, maxExpenseRows);
+            expenseRows.forEach((entry, i) => {
+                const bottomLimit = doc.page.height - margin - 30;
+                if (y > bottomLimit) {
+                    doc.addPage();
+                    
+                    // Add watermark to new page
+                    if (fs.existsSync(logoPath)) {
+                        doc.save();
+                        doc.opacity(0.15);
+                        const logoWidth = 400;
+                        const logoHeight = 230;
+                        const logoX = (pageWidth - logoWidth) / 2;
+                        const logoY = (doc.page.height - logoHeight) / 2;
+                        doc.image(logoPath, logoX, logoY, { width: logoWidth });
+                        doc.restore();
+                        doc.opacity(1);
+                    }
+                    
+                    // Redraw header on new page
+                    y = margin + 40;
+                    const newHeaderY = y;
+                    doc.rect(margin, newHeaderY, contentWidth, rowH).fill(DARK);
+                    
+                    doc.save();
+                    doc.strokeColor("#1f2937").lineWidth(0.5);
+                    headerCellPositions.forEach((cell, idx) => {
+                        if (idx > 0) {
+                            doc.moveTo(cell.x, newHeaderY)
+                                .lineTo(cell.x, newHeaderY + rowH)
+                                .stroke();
+                        }
+                    });
+                    doc.moveTo(margin + contentWidth, newHeaderY)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.moveTo(margin, newHeaderY + rowH)
+                        .lineTo(margin + contentWidth, newHeaderY + rowH)
+                        .stroke();
+                    doc.restore();
+                    
+                    doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+                    doc.text("Date", margin + 8, newHeaderY + 7, { width: col1 - 16 });
+                    doc.text("Description", margin + col1 + 8, newHeaderY + 7, { width: col2 - 16 });
+                    doc.text("Category", margin + col1 + col2 + 8, newHeaderY + 7, { width: col3 - 16 });
+                    doc.text("Amount", margin + col1 + col2 + col3 + 8, newHeaderY + 7, { width: col4 - 16, align: "right" });
+                    doc.text("Status", margin + col1 + col2 + col3 + col4 + 8, newHeaderY + 7, { width: col5 - 16, align: "center" });
+                    y += rowH;
+                }
+
+                const description = entry.description || "—";
+                const category = entry.category || "Uncategorized";
+                
+                drawExpenseRow(
                     formatDate(entry.expense_date),
-                    entry.description || "—",
-                    entry.category || "Uncategorized",
+                    description,
+                    category,
                     formatCurrency(entry.amount),
                     (entry.payment_status || "pending").toUpperCase(),
-                ];
-                values.forEach((val, idx) => {
-                    const offset = widths.slice(0, idx).reduce((a, b) => a + b, 0);
-                    doc.text(val, startX + offset + 4, offsetY, { width: widths[idx] - 8 });
-                });
-                doc.moveDown(0.8);
+                    i % 2 === 0
+                );
             });
 
             if (report.expenses.length > maxExpenseRows) {
-                setFont({ size: 9, color: "#6b7280" });
-                doc.text(`+ ${report.expenses.length - maxExpenseRows} more expenses not shown`, startX, doc.y);
+                doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+                doc.text(`+ ${report.expenses.length - maxExpenseRows} more expenses not shown`, margin, y + 5);
+                y += 20;
             }
         }
-
-        // Final Summary Footer
-        if (doc.y > doc.page.height - doc.page.margins.bottom - 120) {
-            doc.addPage();
-        }
-        doc.moveDown(2);
-        
-        const footerY = doc.y;
-        const footerHeight = 100;
-        doc.save();
-        doc.roundedRect(doc.page.margins.left, footerY, pageWidth, footerHeight, 8)
-            .fill("#0f172a");
-        doc.restore();
-        
-        const footerStartX = doc.page.margins.left + 16;
-        let footerCurrentY = footerY + 16;
-        
-        setFont({ size: 14, bold: true, color: "#ffffff" });
-        doc.text("Report Summary", footerStartX, footerCurrentY);
-        footerCurrentY += 25;
-        
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text("Net Profit:", footerStartX, footerCurrentY);
-        setFont({ size: 12, bold: true, color: profitColor });
-        doc.text(formatCurrency(netProfit), footerStartX + 120, footerCurrentY);
-        
-        footerCurrentY += 18;
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text("Total Revenue:", footerStartX, footerCurrentY);
-        setFont({ size: 11, bold: true, color: "#10b981" });
-        doc.text(formatCurrency(totalRevenue), footerStartX + 120, footerCurrentY);
-        
-        footerCurrentY += 18;
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text("Total Expenses:", footerStartX, footerCurrentY);
-        setFont({ size: 11, bold: true, color: "#ef4444" });
-        doc.text(formatCurrency(expensesTotal), footerStartX + 120, footerCurrentY);
-        
-        const footerRightX = doc.page.margins.left + pageWidth / 2 + 20;
-        footerCurrentY = footerY + 16;
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text("Profit Margin:", footerRightX, footerCurrentY);
-        setFont({ size: 12, bold: true, color: profitColor });
-        doc.text(`${profitMargin}%`, footerRightX + 100, footerCurrentY);
-        
-        footerCurrentY += 18;
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text("Total Invoices:", footerRightX, footerCurrentY);
-        setFont({ size: 11, bold: true, color: "#ffffff" });
-        doc.text(`${report.totals.invoiceCount || report.invoices.length}`, footerRightX + 100, footerCurrentY);
-        
-        footerCurrentY += 18;
-        setFont({ size: 10, color: "#e2e8f0" });
-        doc.text("Total Expenses Count:", footerRightX, footerCurrentY);
-        setFont({ size: 11, bold: true, color: "#ffffff" });
-        doc.text(`${report.expenses.length}`, footerRightX + 100, footerCurrentY);
 
         doc.end();
     });
