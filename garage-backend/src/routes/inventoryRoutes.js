@@ -184,7 +184,12 @@ router.delete("/:id", (req, res) => {
 // Deduct consumable quantity
 router.post("/:id/deduct", (req, res) => {
     const { id } = req.params;
-    const { quantity = 0 } = req.body;
+    const { quantity = 0, invoice_id } = req.body;
+
+    const invoiceIdValue =
+        invoice_id === undefined || invoice_id === null || invoice_id === ""
+            ? null
+            : Number(invoice_id);
 
     let quantityValue;
     try {
@@ -218,7 +223,27 @@ router.post("/:id/deduct", (req, res) => {
 
             db.get("SELECT * FROM InventoryItems WHERE id = ?", [id], (selectErr, updatedItem) => {
                 if (selectErr) return res.status(500).json({ error: selectErr.message });
-                res.json(updatedItem);
+
+                const shouldLogUsage =
+                    invoiceIdValue !== null && Number.isFinite(invoiceIdValue) && invoiceIdValue > 0;
+
+                if (!shouldLogUsage) {
+                    return res.json(updatedItem);
+                }
+
+                db.run(
+                    `
+                    INSERT INTO InventoryUsage (invoice_id, inventory_item_id, quantity, source, created_at)
+                    VALUES (?, ?, ?, 'invoice-manual', CURRENT_TIMESTAMP)
+                `,
+                    [invoiceIdValue, Number(id), quantityValue],
+                    (usageErr) => {
+                        if (usageErr) {
+                            console.error("InventoryUsage insert failed:", usageErr.message);
+                        }
+                        res.json(updatedItem);
+                    }
+                );
             });
         });
     });

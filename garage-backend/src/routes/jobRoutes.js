@@ -169,6 +169,14 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
             `,
                 [qty, inventoryId]
             );
+
+            await runAsync(
+                `
+                INSERT INTO InventoryUsage (invoice_id, inventory_item_id, quantity, source, created_at)
+                VALUES (?, ?, ?, 'job-invoice', CURRENT_TIMESTAMP)
+            `,
+                [invoiceId, inventoryId, qty]
+            );
             consumableMovements.push({
                 itemId: inventoryId,
                 itemName: charge.item_name || `Item #${inventoryId}`,

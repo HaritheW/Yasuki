@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { IST_TIMEZONE, parseSqliteUtcTimestamp } from "@/lib/time";
 
 type NotificationEntry = {
   id: number;
@@ -28,7 +29,7 @@ const NOTIFICATIONS_QUERY_KEY = ["notifications"];
 
 const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 const IST_DATE_TIME_FORMATTER = Intl.DateTimeFormat(undefined, {
-  timeZone: "Asia/Kolkata",
+  timeZone: IST_TIMEZONE,
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
@@ -38,17 +39,7 @@ const IST_DATE_TIME_FORMATTER = Intl.DateTimeFormat(undefined, {
 });
 
 const parseNotificationTimestamp = (timestamp: string) => {
-  if (!timestamp) return null;
-  const normalized = timestamp.trim().replace(" ", "T");
-  const parsed = new Date(normalized);
-  if (!Number.isNaN(parsed.getTime())) {
-    return parsed;
-  }
-  const fallback = new Date(`${normalized}+05:30`);
-  if (!Number.isNaN(fallback.getTime())) {
-    return fallback;
-  }
-  return null;
+  return parseSqliteUtcTimestamp(timestamp);
 };
 
 const formatNotificationTimestamp = (timestamp: string) => {

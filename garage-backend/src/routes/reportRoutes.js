@@ -645,13 +645,13 @@ const fetchInventoryReport = async (range) => {
         ) AS last_purchase ON last_purchase.inventory_item_id = InventoryItems.id
         LEFT JOIN (
             SELECT 
-                JobItems.inventory_item_id, 
-                SUM(JobItems.quantity) AS total_used
-            FROM JobItems
-            INNER JOIN Jobs ON Jobs.id = JobItems.job_id
-            WHERE JobItems.inventory_item_id IS NOT NULL
-              AND DATE(Jobs.created_at) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY JobItems.inventory_item_id
+                InventoryUsage.inventory_item_id,
+                SUM(InventoryUsage.quantity) AS total_used
+            FROM InventoryUsage
+            LEFT JOIN Invoices ON Invoices.id = InventoryUsage.invoice_id
+            WHERE InventoryUsage.inventory_item_id IS NOT NULL
+              AND DATE(COALESCE(Invoices.invoice_date, InventoryUsage.created_at)) BETWEEN DATE(?) AND DATE(?)
+            GROUP BY InventoryUsage.inventory_item_id
         ) AS usage_summary ON usage_summary.inventory_item_id = InventoryItems.id
         ORDER BY InventoryItems.name ASC
     `,

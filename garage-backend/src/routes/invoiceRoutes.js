@@ -233,6 +233,14 @@ const insertInvoiceItems = async (invoiceId, items = [], options = {}) => {
                 itemName: item.item_name,
                 quantity: item.quantity,
             });
+
+            await runAsync(
+                `
+                INSERT INTO InventoryUsage (invoice_id, inventory_item_id, quantity, source, created_at)
+                VALUES (?, ?, ?, 'invoice', CURRENT_TIMESTAMP)
+            `,
+                [invoiceId, item.inventory_item_id, item.quantity]
+            );
         }
     }
 
@@ -470,7 +478,14 @@ const generateInvoicePdfBuffer = (invoice) =>
         const formatDate = (val) => {
             if (!val) return "N/A";
             const d = new Date(val);
-            return isNaN(d.getTime()) ? val : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+            return isNaN(d.getTime())
+                ? val
+                : d.toLocaleDateString("en-GB", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                      timeZone: "Asia/Colombo",
+                  });
         };
 
         // Data
@@ -927,6 +942,7 @@ router.put("/:id", async (req, res) => {
 
         if (Array.isArray(items)) {
             await restockInvoiceItems(id, { invoiceNo: existingInvoice.invoice_no, reason: "update" });
+            await runAsync("DELETE FROM InventoryUsage WHERE invoice_id = ?", [id]);
             await runAsync("DELETE FROM InvoiceItems WHERE invoice_id = ?", [id]);
             const preparedItems = await prepareInvoiceItems(items);
             await insertInvoiceItems(id, preparedItems, { invoiceNo: existingInvoice.invoice_no });
@@ -1010,6 +1026,7 @@ router.delete("/:id", async (req, res) => {
         await runAsync("BEGIN TRANSACTION");
 
         await restockInvoiceItems(id, { invoiceNo: existing.invoice_no, reason: "delete" });
+        await runAsync("DELETE FROM InventoryUsage WHERE invoice_id = ?", [id]);
         await runAsync("DELETE FROM InvoiceExtraItems WHERE invoice_id = ?", [id]);
         await runAsync("DELETE FROM InvoiceItems WHERE invoice_id = ?", [id]);
         await runAsync("DELETE FROM Invoices WHERE id = ?", [id]);

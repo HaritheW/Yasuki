@@ -36,6 +36,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { formatISTDateTime } from "@/lib/time";
 
 type JobStatus = "Pending" | "In Progress" | "Completed" | "Cancelled";
 
@@ -170,20 +171,7 @@ const formatVehicle = (job: JobSummary) => {
   return makeModel ? `${makeModel}${year}${license}`.trim() : "—";
 };
 
-const formatDateTime = (value: string | null | undefined) => {
-  if (!value) return "—";
-  const normalized = value.includes("T") ? value : value.replace(" ", "T");
-  const parsed = new Date(normalized);
-  const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(adjusted);
-};
+const formatDateTime = (value: string | null | undefined) => formatISTDateTime(value);
 
 const Jobs = () => {
   const [createOpen, setCreateOpen] = useState(false);
