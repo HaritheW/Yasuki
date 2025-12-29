@@ -31,6 +31,23 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// Debug endpoint (no secrets) to verify SMTP env values are loaded correctly.
+// Only enabled when NODE_ENV !== "production".
+app.get("/debug/smtp", (req, res) => {
+    if ((process.env.NODE_ENV || "").toLowerCase() === "production") {
+        return res.sendStatus(404);
+    }
+
+    res.json({
+        SMTP_HOST: process.env.SMTP_HOST || null,
+        SMTP_PORT: process.env.SMTP_PORT || null,
+        SMTP_SECURE: process.env.SMTP_SECURE || null,
+        SMTP_USER: process.env.SMTP_USER || null,
+        MAIL_FROM: process.env.MAIL_FROM || null,
+        SMTP_PASS_SET: Boolean(process.env.SMTP_PASS && process.env.SMTP_PASS.trim().length > 0),
+    });
+});
+
 // Routes
 app.use("/customers", customerRoutes);
 app.use("/vehicles", vehicleRoutes);

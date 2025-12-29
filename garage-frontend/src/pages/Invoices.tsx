@@ -59,6 +59,7 @@ type InvoiceSummary = {
   initial_amount: number | null;
   notes: string | null;
   customer_name: string | null;
+  customer_email?: string | null;
   mileage: number | null;
 };
 
@@ -140,12 +141,16 @@ const Invoices = () => {
   const queryClient = useQueryClient();
 
   const [emailOpen, setEmailOpen] = useState(false);
+  const [emailInvoiceId, setEmailInvoiceId] = useState<number | null>(null);
+  const [emailInvoiceLabel, setEmailInvoiceLabel] = useState("");
+  const [emailTo, setEmailTo] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailMessage, setEmailMessage] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<number | null>(null);
   const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<number | null>(null);
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -256,6 +261,32 @@ const Invoices = () => {
       .finally(() => {
         setPreviewLoading(false);
       });
+  };
+
+  const resetEmailDialog = () => {
+    setEmailInvoiceId(null);
+    setEmailInvoiceLabel("");
+    setEmailTo("");
+    setEmailSubject("");
+    setEmailMessage("");
+  };
+
+  const openEmailDialog = async (invoice: InvoiceSummary) => {
+    const label = invoice.invoice_no ?? `Invoice #${invoice.id}`;
+    setEmailInvoiceId(invoice.id);
+    setEmailInvoiceLabel(label);
+    setEmailSubject(`Invoice ${label} from Garage`);
+    setEmailMessage("");
+    setEmailTo("");
+    setEmailOpen(true);
+
+    try {
+      const detail = await apiFetch<InvoiceDetail>(`/invoices/${invoice.id}`);
+      setEmailTo(detail.customer_email ?? "");
+    } catch (error) {
+      // Still allow manual entry if we can't load customer email.
+      console.error("Failed to load invoice for email:", error);
+    }
   };
 
   const invoices = invoicesQuery.data ?? [];
@@ -514,7 +545,8 @@ const Invoices = () => {
 
   const handleSendEmail = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!selectedInvoiceId) {
+
+    if (!emailInvoiceId) {
       toast({
         title: "Error",
         description: "No invoice selected.",
@@ -523,28 +555,35 @@ const Invoices = () => {
       return;
     }
 
-    const form = e.currentTarget;
-    const formData = new FormData(form);
-    const to = formData.get("email") as string;
-    const subject = formData.get("subject") as string;
-    const message = formData.get("message") as string;
+    const trimmedTo = emailTo.trim();
+    const trimmedSubject = emailSubject.trim();
+    const trimmedMessage = emailMessage.trim();
+
+    if (!trimmedTo) {
+      toast({
+        title: "Recipient email required",
+        description: "Please enter a valid recipient email address.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     try {
-      await apiFetch(`/invoices/${selectedInvoiceId}/email`, {
+      await apiFetch(`/invoices/${emailInvoiceId}/email`, {
         method: "POST",
         body: JSON.stringify({
-          to,
-          subject,
-          message: message || undefined,
+          to: trimmedTo,
+          subject: trimmedSubject || undefined,
+          message: trimmedMessage || undefined,
         }),
       });
 
       toast({
         title: "Invoice Sent",
-        description: `Invoice ${selectedInvoiceLabel || ""} has been sent successfully to ${to}.`,
+        description: `${emailInvoiceLabel || `Invoice #${emailInvoiceId}`} sent to ${trimmedTo}.`,
       });
       setEmailOpen(false);
-      form.reset();
+      resetEmailDialog();
     } catch (error) {
       toast({
         title: "Failed to send email",
@@ -980,77 +1019,14 @@ const Invoices = () => {
                             >
                           <FileText className="h-4 w-4" />
                         </Button>
-                        <Dialog 
-                          open={emailOpen} 
-                          onOpenChange={(open) => {
-                            setEmailOpen(open);
-                            if (!open) {
-                              setSelectedInvoiceId(null);
-                              setSelectedInvoiceLabel("");
-                            }
-                          }}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Send Email"
+                          onClick={() => void openEmailDialog(invoice)}
                         >
-                          <DialogTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  title="Send Email"
-                                  onClick={async () => {
-                                    setSelectedInvoiceLabel(displayId);
-                                    setSelectedInvoiceId(invoice.id);
-                                    // Load invoice detail to get customer email
-                                    try {
-                                      const detail = await apiFetch<InvoiceDetail>(`/invoices/${invoice.id}`);
-                                      setSelectedInvoiceDetail(detail);
-                                    } catch (error) {
-                                      console.error("Failed to load invoice details:", error);
-                                    }
-                                  }}
-                                >
-                              <Mail className="h-4 w-4" />
-                            </Button>
-                          </DialogTrigger>
-                          <DialogContent>
-                            <DialogHeader>
-                              <DialogTitle>Send Invoice via Email</DialogTitle>
-                                  <DialogDescription>Send {selectedInvoiceLabel || displayId} to the customer's email address</DialogDescription>
-                            </DialogHeader>
-                            <form onSubmit={handleSendEmail} className="space-y-4">
-                              <div className="space-y-2">
-                                <Label htmlFor="email">Email Address</Label>
-                                <Input 
-                                  id="email" 
-                                  name="email"
-                                  type="email" 
-                                  placeholder="customer@example.com" 
-                                  defaultValue={selectedInvoiceDetail?.customer_email || ""}
-                                  required 
-                                />
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor="subject">Subject</Label>
-                                    <Input 
-                                      id="subject" 
-                                      name="subject"
-                                      defaultValue={`Invoice ${selectedInvoiceLabel || displayId} from Garage`} 
-                                      required 
-                                    />
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor="message">Message (Optional)</Label>
-                                <Textarea id="message" name="message" placeholder="Add a custom message..." />
-                              </div>
-                              <div className="flex justify-end gap-3">
-                                <Button type="button" variant="outline" onClick={() => setEmailOpen(false)}>
-                                  Cancel
-                                </Button>
-                                <Button type="submit" className="bg-primary">
-                                  Send Invoice
-                                </Button>
-                              </div>
-                            </form>
-                          </DialogContent>
-                        </Dialog>
+                          <Mail className="h-4 w-4" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -1790,6 +1766,71 @@ const Invoices = () => {
               Close
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Send Invoice Email Dialog */}
+      <Dialog
+        open={emailOpen}
+        onOpenChange={(open) => {
+          setEmailOpen(open);
+          if (!open) {
+            resetEmailDialog();
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Send Invoice via Email</DialogTitle>
+            <DialogDescription>
+              {emailInvoiceLabel
+                ? `Send ${emailInvoiceLabel} to the customer's email address`
+                : "Select an invoice to email"}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSendEmail} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email Address</Label>
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                placeholder="customer@example.com"
+                value={emailTo}
+                onChange={(event) => setEmailTo(event.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="subject">Subject</Label>
+              <Input
+                id="subject"
+                name="subject"
+                value={emailSubject}
+                onChange={(event) => setEmailSubject(event.target.value)}
+                placeholder="Invoice from Garage"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="message">Message (Optional)</Label>
+              <Textarea
+                id="message"
+                name="message"
+                placeholder="Add a custom message..."
+                value={emailMessage}
+                onChange={(event) => setEmailMessage(event.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="outline" onClick={() => setEmailOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="bg-primary">
+                Send Invoice
+              </Button>
+            </div>
+          </form>
         </DialogContent>
       </Dialog>
 
