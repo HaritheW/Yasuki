@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -174,6 +174,7 @@ const formatVehicle = (job: JobSummary) => {
 const formatDateTime = (value: string | null | undefined) => formatISTDateTime(value);
 
 const Jobs = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
   const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
   const [vehicleSelectOpen, setVehicleSelectOpen] = useState(false);
@@ -613,6 +614,31 @@ const Jobs = () => {
     },
   });
 
+  const openJobById = (id: number) => {
+    if (!Number.isFinite(id) || id <= 0) return;
+    setSelectedJob({ id } as unknown as JobSummary);
+    setJobDetailOpen(true);
+    setJobDetailLoading(true);
+    setSelectedJobDetail(null);
+
+    apiFetch<JobDetail>(`/jobs/${id}`)
+      .then((detail) => {
+        setSelectedJob(detail);
+        setSelectedJobDetail(detail);
+      })
+      .catch((error) => {
+        toast({
+          title: "Unable to load job",
+          description: error.message,
+          variant: "destructive",
+        });
+        setJobDetailOpen(false);
+      })
+      .finally(() => {
+        setJobDetailLoading(false);
+      });
+  };
+
   const handleJobRowClick = (job: JobSummary) => {
     setSelectedJob(job);
     setJobDetailOpen(true);
@@ -635,6 +661,16 @@ const Jobs = () => {
         setJobDetailLoading(false);
       });
   };
+
+  // Deep-link support: /jobs?jobId=123
+  useEffect(() => {
+    const raw = searchParams.get("jobId");
+    if (!raw) return;
+    const id = Number(raw);
+    if (!Number.isFinite(id) || id <= 0) return;
+    openJobById(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const handleEditJobSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Plus, Phone, Edit, Trash2, Briefcase, Calendar, User, Car, ExternalLink } from "lucide-react";
+import { Plus, Phone, Edit, Trash2, Briefcase, Calendar, User, Car } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -26,6 +26,7 @@ import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { formatISTDate } from "@/lib/time";
+import { formatISTDateTime } from "@/lib/time";
 
 type TechnicianStatus = "Active" | "On Leave" | "Inactive";
 
@@ -50,6 +51,8 @@ type TechnicianJob = {
   advance_amount: number | null;
   mileage: number | null;
   created_at: string;
+  status_changed_at?: string | null;
+  updated_at?: string | null;
 };
 
 type UpsertTechnicianPayload = {
@@ -75,6 +78,7 @@ const Technicians = () => {
   const [selectedTech, setSelectedTech] = useState<Technician | null>(null);
   const [createStatus, setCreateStatus] = useState<TechnicianStatus>("Active");
   const [editStatus, setEditStatus] = useState<TechnicianStatus>("Active");
+  const [historyOpen, setHistoryOpen] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -264,8 +268,21 @@ const Technicians = () => {
     isError: technicianJobsError,
   } = useQuery<TechnicianJob[]>({
     queryKey: [...TECHNICIANS_QUERY_KEY, "jobs", selectedTech?.id],
-    queryFn: () => apiFetch<TechnicianJob[]>(`/technicians/${selectedTech?.id}/jobs?include_completed=true`),
+    queryFn: () =>
+      apiFetch<TechnicianJob[]>(
+        `/technicians/${selectedTech?.id}/jobs?statuses=Pending,In%20Progress&limit=10`
+      ),
     enabled: Boolean(selectedTech?.id) && detailOpen,
+  });
+
+  const {
+    data: technicianJobHistory,
+    isLoading: technicianHistoryLoading,
+    isError: technicianHistoryError,
+  } = useQuery<TechnicianJob[]>({
+    queryKey: [...TECHNICIANS_QUERY_KEY, "jobs-history", selectedTech?.id],
+    queryFn: () => apiFetch<TechnicianJob[]>(`/technicians/${selectedTech?.id}/jobs?include_completed=true&limit=200`),
+    enabled: Boolean(selectedTech?.id) && historyOpen,
   });
 
   const formatCurrency = (value: number | null | undefined) => {
@@ -278,6 +295,7 @@ const Technicians = () => {
   };
 
   const formatDate = (value: string | null | undefined) => formatISTDate(value);
+  const formatDateTime = (value: string | null | undefined) => formatISTDateTime(value);
 
   const formatVehicle = (job: TechnicianJob) => {
     if (job.vehicle_name) return job.vehicle_name;
@@ -504,11 +522,11 @@ const Technicians = () => {
                     <Briefcase className="h-5 w-5 text-primary" />
                     <h3 className="text-lg font-semibold">Assigned Jobs</h3>
                   </div>
-                  {technicianJobs && technicianJobs.length > 0 && (
-                    <Badge variant="outline" className="text-sm">
-                      {technicianJobs.length} job{technicianJobs.length === 1 ? "" : "s"}
-                    </Badge>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <Button type="button" size="sm" variant="secondary" onClick={() => setHistoryOpen(true)}>
+                      View technician history
+                    </Button>
+                  </div>
                 </div>
 
                 {technicianJobsLoading && (
@@ -600,6 +618,92 @@ const Technicians = () => {
                     </div>
                   </div>
                 )}
+
+                <Dialog
+                  open={historyOpen}
+                  onOpenChange={(open) => {
+                    setHistoryOpen(open);
+                  }}
+                >
+                  <DialogContent className="max-w-5xl">
+                    <DialogHeader>
+                      <DialogTitle>Technician Job History</DialogTitle>
+                      <DialogDescription>
+                        {selectedTech ? `All job statuses for ${selectedTech.name} (with date/time).` : "All job statuses."}
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    {technicianHistoryLoading && (
+                      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                        Loading history...
+                      </div>
+                    )}
+
+                    {technicianHistoryError && !technicianHistoryLoading && (
+                      <div className="rounded-md border border-destructive/50 bg-destructive/5 p-6 text-center text-sm text-destructive">
+                        Failed to load history. Please try again.
+                      </div>
+                    )}
+
+                    {!technicianHistoryLoading && !technicianHistoryError && (
+                      <div className="space-y-6">
+                        {(["Pending", "In Progress", "Completed", "Cancelled"] as const).map((status) => {
+                          const jobs = (technicianJobHistory ?? []).filter((j) => j.job_status === status);
+                          const label = status === "In Progress" ? "In Progress" : status;
+                          return (
+                            <div key={status} className="rounded-md border">
+                              <div className="flex items-center justify-between border-b bg-muted/20 px-4 py-3">
+                                <div className="font-semibold">{label}</div>
+                                <Badge variant="outline">{jobs.length}</Badge>
+                              </div>
+                              {jobs.length ? (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-sm">
+                                    <thead className="text-left text-muted-foreground">
+                                      <tr>
+                                        <th className="p-3 font-medium">Job</th>
+                                        <th className="p-3 font-medium">Customer</th>
+                                        <th className="p-3 font-medium">Vehicle</th>
+                                        <th className="p-3 font-medium">Description</th>
+                                        <th className="p-3 font-medium">Category</th>
+                                        <th className="p-3 font-medium text-right">Amount</th>
+                                        <th className="p-3 font-medium">Status time</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {jobs.map((job, idx) => (
+                                        <tr
+                                          key={job.id}
+                                          className={`border-t ${idx % 2 === 0 ? "bg-background" : "bg-muted/10"}`}
+                                        >
+                                          <td className="p-3 font-semibold">#{job.id}</td>
+                                          <td className="p-3">{job.customer_name || `Customer #${job.customer_id}`}</td>
+                                          <td className="p-3 text-muted-foreground">{formatVehicle(job)}</td>
+                                          <td className="p-3">
+                                            <span className="max-w-[260px] truncate block" title={job.description || "—"}>
+                                              {job.description || "—"}
+                                            </span>
+                                          </td>
+                                          <td className="p-3 text-muted-foreground">{job.category || "—"}</td>
+                                          <td className="p-3 text-right font-semibold">{formatCurrency(job.initial_amount)}</td>
+                                          <td className="p-3 text-muted-foreground whitespace-nowrap">
+                                            {formatDateTime((job.status_changed_at || job.updated_at || job.created_at) ?? job.created_at)}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <div className="p-4 text-sm text-muted-foreground">No records.</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </DialogContent>
+                </Dialog>
 
                 {/* Job Statistics */}
                 {!technicianJobsLoading && !technicianJobsError && technicianJobs && technicianJobs.length > 0 && (
