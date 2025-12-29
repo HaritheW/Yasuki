@@ -185,16 +185,37 @@ router.delete("/:id", async (req, res) => {
 // Jobs assigned to a technician
 router.get("/:id/jobs", async (req, res) => {
     const { id } = req.params;
-    const { include_completed } = req.query;
+    const { include_completed, statuses, limit } = req.query;
 
     const includeAllStatuses =
         include_completed === "1" ||
         include_completed === "true" ||
         include_completed === "yes";
 
-    const statusFilterClause = includeAllStatuses
-        ? ""
-        : "AND Jobs.job_status NOT IN ('Completed', 'Cancelled')";
+    const allowedJobStatuses = ["Pending", "In Progress", "Completed", "Cancelled"];
+
+    const parsedLimit = Number(limit);
+    const limitValue = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(Math.floor(parsedLimit), 100) : null;
+
+    const requestedStatuses =
+        typeof statuses === "string" && statuses.trim().length
+            ? statuses
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+            : [];
+
+    const validRequestedStatuses = requestedStatuses.filter((s) => allowedJobStatuses.includes(s));
+
+    const whereClauses = ["JobTechnicians.technician_id = ?"];
+    const params = [id];
+
+    if (validRequestedStatuses.length) {
+        whereClauses.push(`Jobs.job_status IN (${validRequestedStatuses.map(() => "?").join(", ")})`);
+        params.push(...validRequestedStatuses);
+    } else if (!includeAllStatuses) {
+        whereClauses.push("Jobs.job_status NOT IN ('Completed', 'Cancelled')");
+    }
 
     const query = `
         SELECT
@@ -205,13 +226,14 @@ router.get("/:id/jobs", async (req, res) => {
         INNER JOIN Jobs ON Jobs.id = JobTechnicians.job_id
         LEFT JOIN Customers ON Customers.id = Jobs.customer_id
         LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
-        WHERE JobTechnicians.technician_id = ?
-        ${statusFilterClause}
-        ORDER BY Jobs.created_at DESC
+        WHERE ${whereClauses.join(" AND ")}
+        ORDER BY COALESCE(Jobs.updated_at, Jobs.status_changed_at, Jobs.created_at) DESC, Jobs.id DESC
+        ${limitValue ? "LIMIT ?" : ""}
     `;
 
     try {
-        const rows = await allAsync(query, [id]);
+        const finalParams = limitValue ? [...params, limitValue] : params;
+        const rows = await allAsync(query, finalParams);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
