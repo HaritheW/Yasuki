@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const app = express();
+const db = require("../database/db");
 const customerRoutes = require("./routes/customerRoutes");
 const vehicleRoutes = require("./routes/vehicleRoutes");
 const technicianRoutes = require("./routes/technicianRoutes");
@@ -30,6 +31,27 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+
+// Ensure required tables exist (safe, idempotent).
+db.run(
+    `
+    CREATE TABLE IF NOT EXISTS InventoryUsage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER,
+        inventory_item_id INTEGER NOT NULL,
+        quantity REAL NOT NULL,
+        source TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(invoice_id) REFERENCES Invoices(id),
+        FOREIGN KEY(inventory_item_id) REFERENCES InventoryItems(id)
+    );
+`,
+    (err) => {
+        if (err) {
+            console.error("InventoryUsage table init failed:", err.message);
+        }
+    }
+);
 
 // Debug endpoint (no secrets) to verify SMTP env values are loaded correctly.
 // Only enabled when NODE_ENV !== "production".

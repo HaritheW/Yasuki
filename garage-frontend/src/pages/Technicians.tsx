@@ -25,6 +25,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { formatISTDate } from "@/lib/time";
 
 type TechnicianStatus = "Active" | "On Leave" | "Inactive";
 
@@ -276,18 +277,7 @@ const Technicians = () => {
     }).format(value);
   };
 
-  const formatDate = (value: string | null | undefined) => {
-    if (!value) return "—";
-    const normalized = value.includes("T") ? value : value.replace(" ", "T");
-    const parsed = new Date(normalized);
-    if (Number.isNaN(parsed.getTime())) return value;
-    const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
-    return new Intl.DateTimeFormat("en-GB", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    }).format(adjusted);
-  };
+  const formatDate = (value: string | null | undefined) => formatISTDate(value);
 
   const formatVehicle = (job: TechnicianJob) => {
     if (job.vehicle_name) return job.vehicle_name;
@@ -553,7 +543,6 @@ const Technicians = () => {
                             <th className="p-3 font-medium">Category</th>
                             <th className="p-3 font-medium text-right">Amount</th>
                             <th className="p-3 font-medium">Date</th>
-                            <th className="p-3 font-medium text-center">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -602,20 +591,6 @@ const Technicians = () => {
                                     <Calendar className="h-3 w-3 flex-shrink-0" />
                                     <span className="text-xs">{formatDate(job.created_at)}</span>
                                   </div>
-                                </td>
-                                <td className="p-3 text-center">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      navigate("/jobs", { state: { jobId: job.id } });
-                                    }}
-                                    className="h-8"
-                                  >
-                                    <ExternalLink className="h-3 w-3 mr-1" />
-                                    View
-                                  </Button>
                                 </td>
                               </tr>
                             );

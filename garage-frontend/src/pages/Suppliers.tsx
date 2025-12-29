@@ -21,6 +21,7 @@ import {
   PAYMENT_METHOD_OTHER_VALUE,
   PaymentMethodSelector,
 } from "@/components/payment-method-selector";
+import { formatISTDate } from "@/lib/time";
 
 type Supplier = {
   id: number;
@@ -91,18 +92,7 @@ const formatCurrency = (value: number | null | undefined) =>
         currency: "LKR",
       }).format(value);
 
-const formatDate = (value: string | null | undefined) => {
-  if (!value) return "—";
-  const normalized = value.includes("T") ? value : value.replace(" ", "T");
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return value;
-  const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  }).format(adjusted);
-};
+const formatDate = (value: string | null | undefined) => formatISTDate(value);
 
 const Suppliers = () => {
   const [addOpen, setAddOpen] = useState(false);

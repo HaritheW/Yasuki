@@ -38,6 +38,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useToast } from "@/hooks/use-toast";
 import { API_BASE_URL, apiFetch } from "@/lib/api";
+import { formatISTDate } from "@/lib/time";
 import {
   DEFAULT_PAYMENT_METHOD_OPTIONS,
   PAYMENT_METHOD_NONE_VALUE,
@@ -121,18 +122,7 @@ const formatCurrency = (value: number | null | undefined) => {
   }).format(value);
 };
 
-const formatDate = (value: string | null | undefined) => {
-  if (!value) return "—";
-  const normalized = value.includes("T") ? value : value.replace(" ", "T");
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return value;
-  const adjusted = new Date(parsed.getTime() + 5.5 * 60 * 60 * 1000);
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  }).format(adjusted);
-};
+const formatDate = (value: string | null | undefined) => formatISTDate(value);
 
 const Invoices = () => {
   const navigate = useNavigate();
@@ -893,12 +883,23 @@ const Invoices = () => {
 
   const handleConfirmInventoryDeduction = async () => {
     if (!pendingInventoryCharge) return;
+    if (!selectedInvoiceDetail) {
+      toast({
+        title: "Invoice not loaded",
+        description: "Please open the invoice details before deducting inventory.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     setDeductInventoryLoading(true);
     try {
       await apiFetch(`/inventory/${pendingInventoryCharge.item.id}/deduct`, {
         method: "POST",
-        body: JSON.stringify({ quantity: pendingInventoryCharge.quantity }),
+        body: JSON.stringify({
+          quantity: pendingInventoryCharge.quantity,
+          invoice_id: selectedInvoiceDetail.id,
+        }),
       });
       queryClient.invalidateQueries({ queryKey: ["inventory", "options"] });
 

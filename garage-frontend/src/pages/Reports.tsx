@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { apiFetch, API_BASE_URL } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import { Badge } from "@/components/ui/badge";
+import { IST_TIMEZONE, parseSqliteUtcTimestamp } from "@/lib/time";
 
 type ReportType = "revenue" | "expense" | "job" | "inventory" | "supplierPurchase";
 type TimeframeOption = "daily" | "monthly" | "yearly" | "custom";
@@ -182,18 +183,26 @@ const generateMonthOptions = (anchor: Date, count = 24) => {
 
 const formatMonthYear = (date: Date | null | undefined) =>
   date ? new Intl.DateTimeFormat("en-GB", { month: "short", year: "numeric" }).format(date) : "—";
-const formatDisplayDate = (date?: Date | null) =>
-  date
+
+const resolveReportDate = (input?: Date | string | null) => parseSqliteUtcTimestamp(input ?? null);
+
+const formatDisplayDate = (input?: Date | string | null) => {
+  const date = resolveReportDate(input);
+  return date
     ? new Intl.DateTimeFormat("en-GB", {
+        timeZone: IST_TIMEZONE,
         day: "2-digit",
         month: "2-digit",
         year: "2-digit",
       }).format(date)
     : "—";
+};
 
-const formatDisplayDateTime = (date?: Date | null) =>
-  date
+const formatDisplayDateTime = (input?: Date | string | null) => {
+  const date = resolveReportDate(input);
+  return date
     ? new Intl.DateTimeFormat("en-GB", {
+        timeZone: IST_TIMEZONE,
         day: "2-digit",
         month: "2-digit",
         year: "2-digit",
@@ -201,16 +210,15 @@ const formatDisplayDateTime = (date?: Date | null) =>
         minute: "2-digit",
       }).format(date)
     : "—";
+};
 
-const SL_TIMEZONE = "Asia/Colombo";
-const formatSriLankaDate = (date?: Date | null) =>
-  date
-    ? new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", timeZone: SL_TIMEZONE }).format(date)
+const formatSriLankaDate = (input?: Date | string | null) => formatDisplayDate(input);
+const formatSriLankaTime = (input?: Date | string | null) => {
+  const date = resolveReportDate(input);
+  return date
+    ? new Intl.DateTimeFormat("en-GB", { timeZone: IST_TIMEZONE, hour: "2-digit", minute: "2-digit", hour12: true }).format(date)
     : "—";
-const formatSriLankaTime = (date?: Date | null) =>
-  date
-    ? new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: SL_TIMEZONE }).format(date)
-    : "—";
+};
 
 const toISODateLocal = (date: Date | null | undefined) => {
   if (!date) return null;
@@ -951,7 +959,7 @@ const Reports = () => {
                       {expenseReport.expenses.slice(0, 50).map((expense) => (
                         <tr key={expense.id} className="border-t border-border/60">
                           <td className="py-2 pr-3">
-                            {formatDisplayDate(new Date(expense.expense_date))}
+                            {formatDisplayDate(expense.expense_date)}
                           </td>
                           <td className="py-2 pr-3">{expense.description}</td>
                           <td className="py-2 pr-3">
@@ -1061,7 +1069,7 @@ const Reports = () => {
                         const vehicleInfo = [job.vehicle_make, job.vehicle_model, job.vehicle_year].filter(Boolean).join(" ") || job.plate || "—";
                         return (
                           <tr key={job.id} className="border-top border-border/60">
-                            <td className="py-2 pr-3">{formatDisplayDate(new Date(job.created_at))}</td>
+                            <td className="py-2 pr-3">{formatDisplayDate(job.created_at)}</td>
                             <td className="py-2 pr-3">{job.description || "—"}</td>
                             <td className="py-2 pr-3">{job.category || <span className="text-muted-foreground">—</span>}</td>
                             <td className="py-2 pr-3">{job.customer_name || "Walk-in"}</td>
@@ -1201,7 +1209,6 @@ const Reports = () => {
                           <th className="py-4 pr-3 text-right">Unit Cost</th>
                           <th className="py-4 pr-3 text-right">Reorder</th>
                           <th className="py-4 pr-3 text-right">Used</th>
-                          <th className="py-4 pr-3">Status</th>
                           <th className="py-4 pr-3">Notes</th>
                           <th className="py-4 pr-3">Created</th>
                           <th className="py-4 pr-3">Updated</th>
@@ -1221,21 +1228,14 @@ const Reports = () => {
                             </td>
                             <td className="py-4 pr-3 text-right">{item.reorder_level ?? <span className="text-muted-foreground">—</span>}</td>
                             <td className="py-4 pr-3 text-right">{item.total_used}</td>
-                            <td className="py-4 pr-3">
-                              {item.low_stock ? (
-                                <Badge variant="destructive">Low</Badge>
-                              ) : (
-                                <Badge variant="outline">OK</Badge>
-                              )}
-                            </td>
                             <td className="py-4 pr-3 max-w-[200px] truncate" title={item.description || "—"}>
                               {item.description || <span className="text-muted-foreground">—</span>}
                             </td>
                             <td className="py-4 pr-3">
-                              {item.created_at ? formatDisplayDateTime(new Date(item.created_at)) : <span className="text-muted-foreground">—</span>}
+                              {item.created_at ? formatDisplayDateTime(item.created_at) : <span className="text-muted-foreground">—</span>}
                             </td>
                             <td className="py-4 pr-3">
-                              {item.updated_at ? formatDisplayDateTime(new Date(item.updated_at)) : <span className="text-muted-foreground">—</span>}
+                              {item.updated_at ? formatDisplayDateTime(item.updated_at) : <span className="text-muted-foreground">—</span>}
                             </td>
                           </tr>
                         ))}
@@ -1385,8 +1385,8 @@ const Reports = () => {
                     <tbody>
                       {(supplierPurchaseReport.purchases ?? []).slice(0, 80).map((p) => (
                         <tr key={p.id} className="border-top border-border/60">
-                          <td className="py-2 pr-3">{formatSriLankaDate(new Date((p as any).purchase_ts || p.purchase_date))}</td>
-                          <td className="py-2 pr-3">{formatSriLankaTime(new Date((p as any).purchase_ts || p.purchase_date))}</td>
+                          <td className="py-2 pr-3">{formatSriLankaDate((p as any).purchase_ts || p.purchase_date)}</td>
+                          <td className="py-2 pr-3">{formatSriLankaTime((p as any).purchase_ts || p.purchase_date)}</td>
                           <td className="py-2 pr-3">{p.supplier_name || `Supplier #${p.supplier_id}`}</td>
                           <td className="py-2 pr-3">{p.item_name}</td>
                           <td className="py-2 pr-3 text-right">{Number(p.quantity || 0)}</td>
@@ -1601,7 +1601,7 @@ const Reports = () => {
                       {revenueReport.invoices.slice(0, 50).map((invoice) => (
                         <tr key={invoice.id} className="border-t border-border/60">
                           <td className="py-2 pr-3">
-                            {formatDisplayDate(new Date(invoice.invoice_date))}
+                            {formatDisplayDate(invoice.invoice_date)}
                           </td>
                           <td className="py-2 pr-3">{invoice.invoice_no}</td>
                           <td className="py-2 pr-3">{invoice.customer_name || "Walk-in"}</td>
@@ -1653,7 +1653,7 @@ const Reports = () => {
                       {revenueReport.expenses.slice(0, 50).map((expense) => (
                         <tr key={expense.id} className="border-t border-border/60">
                           <td className="py-2 pr-3">
-                            {formatDisplayDate(new Date(expense.expense_date))}
+                            {formatDisplayDate(expense.expense_date)}
                           </td>
                           <td className="py-2 pr-3">{expense.description}</td>
                           <td className="py-2 pr-3">
