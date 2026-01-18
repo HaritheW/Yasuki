@@ -535,7 +535,23 @@ const generateInvoicePdfBuffer = (invoice) =>
         doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
         doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
         
-        y += logoSize + 10;
+        // Add brand logos image directly below company details line in header section
+        const brandLogosPath = path.join(__dirname, "../assets/Brand logos.png");
+        if (fs.existsSync(brandLogosPath)) {
+            // Company details text is at y + 28, text line height is ~10, so logos start at y + 28 + 10 + 5 spacing
+            const brandLogosY = y + 43; // Position immediately below company details text
+            const brandLogosWidth = contentWidth;
+            const brandLogosHeight = 40; // Reduced height while maintaining clarity
+            // Draw brand logos with both width and height to control exact positioning
+            doc.image(brandLogosPath, margin, brandLogosY, { 
+                width: brandLogosWidth,
+                height: brandLogosHeight
+            });
+            // Update y position to after logos
+            y = brandLogosY + brandLogosHeight + 10;
+        } else {
+            y += logoSize + 10;
+        }
 
         // Divider
         doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
