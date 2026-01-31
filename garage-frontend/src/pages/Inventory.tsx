@@ -27,6 +27,8 @@ import { useMemo, useState, useEffect } from "react";
 
 type InventoryType = "consumable" | "non-consumable" | "bulk";
 
+type GenuineOption = "genuine" | "non-genuine";
+
 type InventoryItem = {
   id: number;
   name: string;
@@ -36,6 +38,7 @@ type InventoryItem = {
   quantity: number;
   unit_cost: number | null;
   reorder_level: number | null;
+  genuine_or_non_genuine?: GenuineOption | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -48,6 +51,7 @@ type InventoryPayload = Partial<{
   quantity: number;
   unit_cost: number | null;
   reorder_level: number | null;
+  genuine_or_non_genuine: GenuineOption | null;
 }>;
 
 const INVENTORY_QUERY_KEY = ["inventory"];
@@ -68,6 +72,11 @@ const typeBadgeStyles: Record<InventoryType, string> = {
   "non-consumable": "bg-secondary text-secondary-foreground",
   bulk: "bg-gray-600 text-white",
 };
+
+const genuineOptions: Array<{ value: GenuineOption; label: string }> = [
+  { value: "genuine", label: "Genuine" },
+  { value: "non-genuine", label: "Non Genuine" },
+];
 
 const statusBadgeStyles = {
   "Low Stock": "bg-warning text-warning-foreground",
@@ -109,9 +118,11 @@ const Inventory = () => {
   const [typeFilter, setTypeFilter] = useState<"all" | InventoryType>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [createType, setCreateType] = useState<InventoryType | "">("");
+  const [createGenuine, setCreateGenuine] = useState<GenuineOption | "">("");
   const [createUnit, setCreateUnit] = useState<string>(NO_UNIT_VALUE);
   const [createUnitCustom, setCreateUnitCustom] = useState<string>("");
   const [editType, setEditType] = useState<InventoryType | "">("");
+  const [editGenuine, setEditGenuine] = useState<GenuineOption | "">("");
   const [editUnitSelect, setEditUnitSelect] = useState<string>(NO_UNIT_VALUE);
   const [editUnitCustom, setEditUnitCustom] = useState<string>("");
   const [addStockItemId, setAddStockItemId] = useState<string>("");
@@ -153,6 +164,7 @@ const Inventory = () => {
   useEffect(() => {
     if (addItemOpen) {
       setCreateType("");
+      setCreateGenuine("");
       setCreateUnit(NO_UNIT_VALUE);
     setCreateUnitCustom("");
     }
@@ -161,6 +173,7 @@ const Inventory = () => {
   useEffect(() => {
     if (selectedItem && editOpen) {
       setEditType(selectedItem.type);
+      setEditGenuine(selectedItem.genuine_or_non_genuine ?? "");
     if (selectedItem.unit) {
       if ((UNIT_OPTIONS as readonly string[]).includes(selectedItem.unit)) {
         setEditUnitSelect(selectedItem.unit);
@@ -177,6 +190,7 @@ const Inventory = () => {
     setEditUnitSelect(NO_UNIT_VALUE);
     setEditUnitCustom("");
     }
+    if (!editOpen) setEditGenuine("");
   }, [selectedItem, editOpen]);
 
   const getStatusLabel = (item: InventoryItem) => {
@@ -368,11 +382,13 @@ const Inventory = () => {
         quantity: quantityValue,
         unit_cost: unitCostValue,
         reorder_level: reorderLevelValue,
+        genuine_or_non_genuine: createGenuine ? (createGenuine as GenuineOption) : null,
       },
       {
         onSuccess: () => {
           form.reset();
           setCreateType("");
+          setCreateGenuine("");
           setCreateUnit(NO_UNIT_VALUE);
           setCreateUnitCustom("");
         },
@@ -421,6 +437,7 @@ const Inventory = () => {
       description: description || null,
       type: editType as InventoryType,
       unit: unitValue ? unitValue : null,
+      genuine_or_non_genuine: editGenuine ? (editGenuine as GenuineOption) : null,
     };
 
     if (quantityValueRaw !== "") {
@@ -638,6 +655,22 @@ const Inventory = () => {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="genuine">Genuine or Non Genuine</Label>
+                  <Select value={createGenuine} onValueChange={(v) => setCreateGenuine((v || "") as GenuineOption | "")}>
+                    <SelectTrigger id="genuine">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {genuineOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
                   <Label>Unit</Label>
                   <Select value={createUnit} onValueChange={handleCreateUnitChange}>
                     <SelectTrigger>
@@ -763,6 +796,7 @@ const Inventory = () => {
                 <tr className="border-b bg-muted/50">
                   <th className="p-3 text-left text-sm font-medium">Item Name</th>
                   <th className="p-3 text-left text-sm font-medium">Type</th>
+                  <th className="p-3 text-left text-sm font-medium">Genuine / Non Genuine</th>
                   <th className="p-3 text-left text-sm font-medium">Quantity</th>
                   <th className="p-3 text-left text-sm font-medium">Unit Cost</th>
                   <th className="p-3 text-left text-sm font-medium">Status</th>
@@ -772,21 +806,21 @@ const Inventory = () => {
               <tbody>
                 {isLoading && (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-sm text-muted-foreground">
+                    <td colSpan={8} className="p-6 text-center text-sm text-muted-foreground">
                       Loading inventory...
                     </td>
                   </tr>
                 )}
                 {isError && !isLoading && (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-sm text-destructive">
+                    <td colSpan={8} className="p-6 text-center text-sm text-destructive">
                       {error?.message ?? "Failed to load inventory."}
                     </td>
                   </tr>
                 )}
                 {!isLoading && !isError && filteredInventory.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-sm text-muted-foreground">
+                    <td colSpan={8} className="p-6 text-center text-sm text-muted-foreground">
                       No inventory items match the current filters.
                     </td>
                   </tr>
@@ -806,6 +840,13 @@ const Inventory = () => {
                           <Badge className={typeBadgeStyles[item.type]}>
                             {typeLabels[item.type]}
                           </Badge>
+                    </td>
+                    <td className="p-3 text-muted-foreground">
+                          {item.genuine_or_non_genuine === "genuine"
+                            ? "Genuine"
+                            : item.genuine_or_non_genuine === "non-genuine"
+                            ? "Non Genuine"
+                            : "—"}
                     </td>
                     <td className="p-3">
                           <span
@@ -870,6 +911,16 @@ const Inventory = () => {
                       {typeLabels[selectedItem.type]}
                     </Badge>
                   </div>
+                </div>
+                <div>
+                  <Label className="text-muted-foreground">Genuine or Non Genuine</Label>
+                  <p className="font-semibold">
+                    {selectedItem.genuine_or_non_genuine === "genuine"
+                      ? "Genuine"
+                      : selectedItem.genuine_or_non_genuine === "non-genuine"
+                      ? "Non Genuine"
+                      : "—"}
+                  </p>
                 </div>
                 <div>
                   <Label className="text-muted-foreground">Quantity</Label>
@@ -967,6 +1018,21 @@ const Inventory = () => {
                           {option.label}
                         </SelectItem>
                       ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Genuine or Non Genuine</Label>
+                    <Select value={editGenuine} onValueChange={(v) => setEditGenuine((v || "") as GenuineOption | "")}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {genuineOptions.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>

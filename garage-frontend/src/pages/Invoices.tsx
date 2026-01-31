@@ -105,10 +105,19 @@ type PendingInventoryCharge = {
   lineTotal: number;
 };
 
+type InvoiceItemPayload = {
+  inventory_item_id: number | null;
+  item_name: string;
+  type: string;
+  quantity: number;
+  unit_price: number;
+};
+
 type UpdateInvoicePayload = {
   payment_method: string | null;
   payment_status: "unpaid" | "partial" | "paid";
   notes: string | null;
+  items?: InvoiceItemPayload[];
   charges: Array<{ label: string; amount: number }>;
   reductions: Array<{ label: string; amount: number }>;
 };
@@ -153,6 +162,7 @@ const Invoices = () => {
   const [editMethodChoice, setEditMethodChoice] = useState<string>(PAYMENT_METHOD_NONE_VALUE);
   const [editMethodCustom, setEditMethodCustom] = useState("");
   const [editNotes, setEditNotes] = useState("");
+  const [editItems, setEditItems] = useState<InvoiceItemPayload[]>([]);
   const [editCharges, setEditCharges] = useState<Array<{ label: string; amount: string }>>([]);
   const [editReductions, setEditReductions] = useState<
     Array<{ label: string; amount: string; percentage?: string; appliedBase?: string }>
@@ -335,6 +345,7 @@ const Invoices = () => {
 
   const openEditModal = () => {
     if (!selectedInvoiceDetail) return;
+    const currentItems = selectedInvoiceDetail.items ?? [];
     const currentCharges = selectedInvoiceDetail.charges ?? [];
     const currentReductions = selectedInvoiceDetail.reductions ?? [];
     setEditPaymentStatus(
@@ -342,6 +353,15 @@ const Invoices = () => {
     );
     syncEditPaymentMethod(selectedInvoiceDetail.payment_method ?? "");
     setEditNotes(selectedInvoiceDetail.notes ?? "");
+    setEditItems(
+      currentItems.map((entry) => ({
+        inventory_item_id: entry.inventory_item_id ?? null,
+        item_name: entry.item_name ?? "",
+        type: entry.type ?? "consumable",
+        quantity: Number(entry.quantity) || 1,
+        unit_price: Number(entry.unit_price) ?? 0,
+      }))
+    );
     setEditCharges(
       currentCharges.map((entry) => ({
         label: entry.label ?? "",
@@ -382,6 +402,15 @@ const Invoices = () => {
       setEditPaymentStatus((invoice.payment_status as "unpaid" | "partial" | "paid") ?? "unpaid");
       syncEditPaymentMethod(invoice.payment_method ?? "");
       setEditNotes(invoice.notes ?? "");
+      setEditItems(
+        (invoice.items ?? []).map((entry) => ({
+          inventory_item_id: entry.inventory_item_id ?? null,
+          item_name: entry.item_name ?? "",
+          type: entry.type ?? "consumable",
+          quantity: Number(entry.quantity) || 1,
+          unit_price: Number(entry.unit_price) ?? 0,
+        }))
+      );
       setEditCharges(
         (invoice.charges ?? []).map((entry) => ({
           label: entry.label ?? "",
@@ -527,6 +556,13 @@ const Invoices = () => {
         payment_method: paymentMethodValue ? paymentMethodValue : null,
         payment_status: editPaymentStatus,
         notes: editNotes.trim() ? editNotes.trim() : null,
+        items: editItems.map((entry) => ({
+          inventory_item_id: entry.inventory_item_id,
+          item_name: entry.item_name,
+          type: entry.type,
+          quantity: entry.quantity,
+          unit_price: entry.unit_price,
+        })),
         charges: parsedCharges,
         reductions: parsedReductions,
       },
@@ -657,25 +693,33 @@ const Invoices = () => {
     lineTotal,
     quantity,
     deducted,
+    rate,
   }: {
     item: InventoryOption;
     label: string;
     lineTotal: number;
     quantity: number;
     deducted: boolean;
+    rate: number;
   }) => {
     const unitsLabel = quantity === 1 ? "unit" : "units";
 
-    setEditCharges((prev) => [
+    setEditItems((prev) => [
       ...prev,
-      { label, amount: lineTotal.toString() },
+      {
+        inventory_item_id: item.id,
+        item_name: item.name,
+        type: item.type ?? "consumable",
+        quantity,
+        unit_price: rate,
+      },
     ]);
 
     toast({
       title: "Inventory item added",
       description: deducted
         ? `${item.name} added and ${quantity} ${unitsLabel} deducted from inventory.`
-        : `${item.name} added as a charge${item.type === "consumable" ? ", inventory left unchanged." : "."}`,
+        : `${item.name} added as a line item${item.type === "consumable" ? ", inventory left unchanged." : "."}`,
     });
 
     resetAddChargeForm();
@@ -763,6 +807,7 @@ const Invoices = () => {
       lineTotal,
       quantity: quantityValue,
       deducted: false,
+      rate: rateValue,
     });
   };
 
@@ -813,9 +858,10 @@ const Invoices = () => {
 
     const baseLabel = reductionLabel.trim();
 
-    const itemsBase = (selectedInvoiceDetail.items ?? []).reduce((sum, item) => {
-      return sum + (Number(item.line_total ?? 0) || 0);
-    }, 0);
+    const itemsBase = editItems.reduce(
+      (sum, item) => sum + Number((item.quantity * item.unit_price) || 0),
+      0
+    );
 
     const chargesBase = editCharges.reduce((sum, entry) => {
       const numeric = Number(entry.amount ?? "");
@@ -878,6 +924,7 @@ const Invoices = () => {
       lineTotal,
       quantity,
       deducted: false,
+      rate: pendingInventoryCharge.rate,
     });
   };
 
@@ -910,6 +957,7 @@ const Invoices = () => {
         lineTotal,
         quantity,
         deducted: true,
+        rate: pendingInventoryCharge.rate,
       });
     } catch (error) {
       toast({
@@ -1361,7 +1409,52 @@ const Invoices = () => {
 
                 <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <Label className="text-base font-semibold">Charges</Label>
+                  <Label className="text-base font-semibold">Line items (parts)</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      resetAddChargeForm();
+                      setAddChargeMode("inventory");
+                      setAddChargeOpen(true);
+                    }}
+                  >
+                    Add from inventory
+                  </Button>
+                </div>
+                {editItems.length === 0 && (
+                  <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+                    No line items yet. Add parts from inventory; they will appear in Genuine/Non-Genuine on the PDF.
+                  </p>
+                )}
+                {editItems.length > 0 &&
+                  editItems.map((entry, index) => (
+                    <div
+                      key={`item-${index}`}
+                      className="flex items-center justify-between gap-3 rounded-md border border-muted p-3"
+                    >
+                      <span className="text-sm font-medium">
+                        {entry.item_name} × {entry.quantity} @ {formatCurrency(entry.unit_price)}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground"
+                        onClick={() =>
+                          setEditItems((prev) => prev.filter((_, i) => i !== index))
+                        }
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-base font-semibold">Charges (labour)</Label>
                   <Button
                     type="button"
                     variant="outline"
@@ -1377,7 +1470,7 @@ const Invoices = () => {
                   </div>
                 {editCharges.length === 0 && (
                   <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
-                    No charges yet. Use “Add charge” to include labour, parts, or other costs.
+                    No labour charges yet. Use “Add charge” for workshop labour (shown in Workshop Charges on the PDF).
                   </p>
                 )}
                 {editCharges.map((entry, index) => (

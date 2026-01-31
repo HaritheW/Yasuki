@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require("../../database/db");
 
 const VALID_TYPES = ["consumable", "non-consumable", "bulk"];
+const VALID_GENUINE = ["genuine", "non-genuine"];
 
 const toNumber = (value, fieldName) => {
     const numericValue = Number(value);
@@ -26,11 +27,16 @@ const parseNullableNumber = (value, fieldName) => {
 
 // Create inventory item
 router.post("/", (req, res) => {
-    const { name, description, type, unit, quantity = 0, unit_cost, reorder_level = 0 } = req.body;
+    const { name, description, type, unit, quantity = 0, unit_cost, reorder_level = 0, genuine_or_non_genuine } = req.body;
 
     if (!name || !type || !VALID_TYPES.includes(type)) {
         return res.status(400).json({ error: "name and valid type are required" });
     }
+
+    const genuineValue =
+        genuine_or_non_genuine && VALID_GENUINE.includes(genuine_or_non_genuine)
+            ? genuine_or_non_genuine
+            : null;
 
     let quantityValue;
     let unitCostValue;
@@ -45,12 +51,12 @@ router.post("/", (req, res) => {
     }
 
     const query = `
-        INSERT INTO InventoryItems (name, description, type, unit, quantity, unit_cost, reorder_level)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO InventoryItems (name, description, type, unit, quantity, unit_cost, reorder_level, genuine_or_non_genuine)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
     db.run(
         query,
-        [name, description, type, unit, quantityValue, unitCostValue, reorderLevelValue],
+        [name, description, type, unit, quantityValue, unitCostValue, reorderLevelValue, genuineValue],
         function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.status(201).json({
@@ -62,6 +68,7 @@ router.post("/", (req, res) => {
             quantity: quantityValue,
                 unit_cost: unitCostValue,
             reorder_level: reorderLevelValue,
+            genuine_or_non_genuine: genuineValue,
         });
         }
     );
@@ -108,11 +115,18 @@ router.get("/:id", (req, res) => {
 // Update inventory item
 router.put("/:id", (req, res) => {
     const { id } = req.params;
-    const { name, description, type, unit, quantity, unit_cost, reorder_level } = req.body;
+    const { name, description, type, unit, quantity, unit_cost, reorder_level, genuine_or_non_genuine } = req.body;
 
     if (type && !VALID_TYPES.includes(type)) {
         return res.status(400).json({ error: "Invalid inventory type" });
     }
+
+    const genuineValue =
+        genuine_or_non_genuine === undefined || genuine_or_non_genuine === null
+            ? undefined
+            : VALID_GENUINE.includes(genuine_or_non_genuine)
+            ? genuine_or_non_genuine
+            : null;
 
     let quantityValue = null;
     let unitCostValue = null;
@@ -141,6 +155,7 @@ router.put("/:id", (req, res) => {
             quantity = COALESCE(?, quantity),
             reorder_level = COALESCE(?, reorder_level),
             unit_cost = CASE WHEN ? = 1 THEN ? ELSE unit_cost END,
+            genuine_or_non_genuine = CASE WHEN ? = 1 THEN ? ELSE genuine_or_non_genuine END,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     `,
@@ -153,6 +168,8 @@ router.put("/:id", (req, res) => {
             reorderLevelValue,
             unitCostProvided ? 1 : 0,
             unitCostValue,
+            genuineValue !== undefined ? 1 : 0,
+            genuineValue !== undefined ? genuineValue : null,
             id,
         ],
         function (err) {

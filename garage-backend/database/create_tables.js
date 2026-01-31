@@ -107,6 +107,7 @@ db.serialize(() => {
             quantity REAL DEFAULT 0,
             unit_cost REAL,
             reorder_level REAL DEFAULT 0,
+            genuine_or_non_genuine TEXT CHECK(genuine_or_non_genuine IN ('genuine', 'non-genuine')),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );

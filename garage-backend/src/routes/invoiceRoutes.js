@@ -424,15 +424,29 @@ const loadInvoiceDetails = async (invoiceId) => {
 
     if (!invoice) return null;
 
-    const items = await allAsync(
+    const rawItems = await allAsync(
         `
-        SELECT id, invoice_id, inventory_item_id, item_name, type, quantity, unit_price, line_total
-        FROM InvoiceItems
-        WHERE invoice_id = ?
-        ORDER BY id ASC
+        SELECT ii.id, ii.invoice_id, ii.inventory_item_id, ii.item_name, ii.type, ii.quantity, ii.unit_price, ii.line_total,
+               inv.genuine_or_non_genuine AS genuine_or_non_genuine
+        FROM InvoiceItems ii
+        LEFT JOIN InventoryItems inv ON inv.id = ii.inventory_item_id
+        WHERE ii.invoice_id = ?
+        ORDER BY ii.id ASC
     `,
         [invoiceId]
     );
+    // Normalize row keys (sqlite3 may return prefixed or different-cased keys from JOINs)
+    const items = (rawItems || []).map((row) => ({
+        id: row.id,
+        invoice_id: row.invoice_id,
+        inventory_item_id: row.inventory_item_id,
+        item_name: row.item_name ?? row.Item_name ?? row["ii.item_name"],
+        type: row.type,
+        quantity: row.quantity,
+        unit_price: row.unit_price,
+        line_total: row.line_total,
+        genuine_or_non_genuine: row.genuine_or_non_genuine ?? row.Genuine_or_non_genuine,
+    }));
 
     const extras = await allAsync(
         `
@@ -475,6 +489,9 @@ const generateInvoicePdfBuffer = (invoice) =>
 
         // Helper functions
         const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const formatAmount = (val) => Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const formatAmountStar = (val) => `${formatAmount(val)}*`;
+        const formatQuantity = (val) => Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
         const formatDate = (val) => {
             if (!val) return "N/A";
             const d = new Date(val);
@@ -488,14 +505,24 @@ const generateInvoicePdfBuffer = (invoice) =>
                   });
         };
 
-        // Data
+        // Data – split for invoice format: Workshop Charges (labour), Genuine parts, Non-Genuine parts
         const items = invoice.items ?? [];
         const charges = invoice.charges ?? [];
         const reductions = invoice.reductions ?? [];
-        const subtotal = items.reduce((s, i) => s + Number(i.line_total ?? 0), 0) + charges.reduce((s, c) => s + Number(c.amount ?? 0), 0);
+        // Normalize genuine flag (handle casing/whitespace; null/undefined = non-genuine)
+        const isGenuine = (i) => String(i.genuine_or_non_genuine || "").toLowerCase().trim() === "genuine";
+        const genuineItems = items.filter(isGenuine);
+        const nonGenuineItems = items.filter((i) => !isGenuine(i));
+        const labourTotal = charges.reduce((s, c) => s + Number(c.amount ?? 0), 0);
+        const genuineTotal = genuineItems.reduce((s, i) => s + Number(i.line_total ?? 0), 0);
+        const nonGenuineTotal = nonGenuineItems.reduce((s, i) => s + Number(i.line_total ?? 0), 0);
+        const subtotal = labourTotal + genuineTotal + nonGenuineTotal;
         const totalReductions = reductions.reduce((s, r) => s + Number(r.amount ?? 0), 0);
         const totalDue = invoice.final_total ?? subtotal - totalReductions;
         const status = (invoice.payment_status ?? "unpaid").charAt(0).toUpperCase() + (invoice.payment_status ?? "unpaid").slice(1);
+        const invoiceDateYyyymmdd = invoice.invoice_date
+            ? new Date(invoice.invoice_date).toISOString().slice(0, 10).replace(/-/g, "")
+            : "";
 
         let y = margin;
 
@@ -591,116 +618,165 @@ const generateInvoicePdfBuffer = (invoice) =>
         y += 10;
 
         // ═══════════════════════════════════════════════════════════
-        // ITEMS TABLE
+        // INVOICE DATA FORMAT: Workshop Charges, Genuine Parts, Non-Genuine Parts
         // ═══════════════════════════════════════════════════════════
-        const tableTop = y;
-        const col1 = 35;    // #
-        const col2 = 305;   // Description
-        const col3 = 55;    // Qty
-        const col4 = contentWidth - col1 - col2 - col3; // Amount
-        const rowH = 22;
-
-        // Header
-        doc.rect(margin, y, contentWidth, rowH).fill(DARK);
-        doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
-        doc.text("#", margin + 8, y + 7, { width: col1 - 8 });
-        doc.text("DESCRIPTION", margin + col1 + 8, y + 7, { width: col2 - 8 });
-        doc.text("QTY", margin + col1 + col2, y + 7, { width: col3, align: "center" });
-        doc.text("AMOUNT", margin + col1 + col2 + col3, y + 7, { width: col4 - 8, align: "right" });
-        y += rowH;
-
-        // Helper function to extract quantity from item_name if it contains (N×) format
-        const extractQuantityFromName = (itemName) => {
-            if (!itemName || typeof itemName !== "string") return null;
-            // Try to match patterns like "(2×)", "(2 x)", "(2x)", etc.
-            const patterns = [
-                /\((\d+(?:\.\d+)?)×\)/,  // (2×)
-                /\((\d+(?:\.\d+)?)\s*×\s*\)/,  // (2 ×) with spaces
-                /\((\d+(?:\.\d+)?)\s*x\s*\)/i,  // (2 x) case insensitive
-            ];
-            for (const pattern of patterns) {
-                const match = itemName.match(pattern);
-                if (match) {
-                    const parsed = Number(match[1]);
-                    if (!isNaN(parsed) && parsed > 0) {
-                        return parsed;
-                    }
-                }
-            }
-            return null;
+        const rowH = 20;
+        const dashY = () => {
+            doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(BORDER).lineWidth(0.5).stroke();
+            y += 8;
         };
 
-        // Helper function to remove quantity pattern from item_name
+        // Helper to clean item name (remove quantity pattern)
         const cleanItemName = (itemName) => {
             if (!itemName || typeof itemName !== "string") return itemName;
-            // Remove patterns like "(2×)", "(2 ×)", "(2x)", etc.
             return itemName
-                .replace(/\s*\(\d+(?:\.\d+)?\s*×\s*\)/gi, "")  // Remove (N×) with any spacing
-                .replace(/\s*\(\d+(?:\.\d+)?\s*x\s*\)/gi, "")  // Remove (Nx) case insensitive
+                .replace(/\s*\(\d+(?:\.\d+)?\s*×\s*\)/gi, "")
+                .replace(/\s*\(\d+(?:\.\d+)?\s*x\s*\)/gi, "")
                 .trim();
         };
 
-        // Rows
-        let rowNum = 1;
-        const drawRow = (desc, qty, amount, alt) => {
-            if (alt) doc.rect(margin, y, contentWidth, rowH).fill(LIGHT);
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(rowNum++), margin + 8, y + 7, { width: col1 - 8 });
-            doc.text(desc, margin + col1 + 8, y + 7, { width: col2 - 16 });
-            doc.text(qty, margin + col1 + col2, y + 7, { width: col3, align: "center" });
-            doc.text(amount, margin + col1 + col2 + col3, y + 7, { width: col4 - 8, align: "right" });
-            y += rowH;
-        };
+        // ─── 1. WORKSHOP CHARGES (Labour) ───
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+        doc.text("WORKSHOP CHARGES", margin, y, { width: contentWidth, align: "center" });
+        y += 14;
 
-        items.forEach((item, i) => {
-            // Try to get quantity from item_name if it contains (N×) format, otherwise use item.quantity
-            // Prioritize extracted quantity from name if available, as it's more accurate
-            const extractedQty = extractQuantityFromName(item.item_name);
-            const quantity = extractedQty !== null ? extractedQty : (item.quantity && item.quantity > 0 ? item.quantity : 1);
-            // Clean the item name to remove the quantity pattern
-            const cleanName = cleanItemName(item.item_name ?? "Item");
-            drawRow(cleanName, String(quantity), formatCurrency(item.line_total ?? 0), i % 2 === 0);
-        });
+        const cColNo = 40;
+        const cColDesc = contentWidth - cColNo - 90;
+        const cColAmt = 90;
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("ITEM NO.", margin + 6, y + 6, { width: cColNo - 6 });
+        doc.text("DESCRIPTION", margin + cColNo + 6, y + 6, { width: cColDesc - 6 });
+        doc.text("AMOUNT", margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
+        y += rowH;
+        dashY();
+
+        let chargeNo = 1;
         charges.forEach((c, i) => {
-            // Try to extract quantity from charge label if it contains (N×) format, otherwise default to 1
-            const extractedQty = extractQuantityFromName(c.label);
-            const quantity = extractedQty !== null ? extractedQty : 1;
-            // Clean the charge label to remove the quantity pattern
-            const cleanLabel = cleanItemName(c.label ?? "Charge");
-            const isAlt = (items.length + i) % 2 === 0;
-            drawRow(cleanLabel, String(quantity), formatCurrency(c.amount ?? 0), isAlt);
+            if (i > 0) doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(String(chargeNo++), margin + 6, y + 6, { width: cColNo - 6 });
+            doc.text(cleanItemName(c.label ?? "Charge"), margin + cColNo + 6, y + 6, { width: cColDesc - 12 });
+            doc.text(formatAmountStar(c.amount ?? 0), margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
+            y += rowH;
         });
-
-        y += 15;
-
-        // ═══════════════════════════════════════════════════════════
-        // SUMMARY
-        // ═══════════════════════════════════════════════════════════
-        const sumX = pageWidth - margin - 200;
-        const sumW = 200;
-        const summaryHeight = 70 + (reductions.length * 14);
-
-        doc.rect(sumX, y, sumW, summaryHeight).strokeColor(BORDER).lineWidth(1).stroke();
-
-        let sumY = y + 10;
-        const sumRow = (label, value, bold = false, red = false) => {
-            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(9);
-            doc.fillColor(GRAY).text(label, sumX + 12, sumY, { width: 90 });
-            doc.fillColor(red ? PRIMARY : DARK).text(value, sumX + 100, sumY, { width: 85, align: "right" });
-            sumY += 14;
-        };
-
-        sumRow("Subtotal:", formatCurrency(subtotal));
-        if (reductions.length > 0) {
-            reductions.forEach(r => sumRow(`- ${r.label ?? "Discount"}:`, `-${formatCurrency(r.amount ?? 0)}`));
+        if (charges.length === 0) {
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
+            y += rowH;
         }
-        sumY += 3;
-        doc.moveTo(sumX + 12, sumY).lineTo(sumX + sumW - 12, sumY).strokeColor(BORDER).stroke();
-        sumY += 8;
-        sumRow("TOTAL DUE:", formatCurrency(totalDue), true, true);
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Labour Total:", margin + cColNo + cColDesc - 80, y + 6, { width: 80, align: "right" });
+        doc.text(formatAmountStar(labourTotal), margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
+        y += rowH + 10;
+        dashY();
 
-        y += summaryHeight + 15;
+        // ─── 2. WORKSHOP PARTS & MATERIALS (Genuine) ───
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+        doc.text("WORKSHOP PARTS & MATERIALS", margin, y, { width: contentWidth, align: "center" });
+        y += 14;
+
+        const pColNo = 35;
+        const pColDesc = 260;
+        const pColQty = 55;
+        const pColTotal = contentWidth - pColNo - pColDesc - pColQty;
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("IT.NO.", margin + 6, y + 6, { width: pColNo - 6 });
+        doc.text("DESCRIPTION", margin + pColNo + 6, y + 6, { width: pColDesc - 6 });
+        doc.text("QUANTITY", margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
+        doc.text("TOTAL", margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
+        y += rowH;
+        dashY();
+
+        let genNo = 1;
+        genuineItems.forEach((item, i) => {
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
+            const qty = Number(item.quantity);
+            const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
+            const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
+            const lineTotal = Number(item.line_total);
+            const lineTotalVal = isNaN(lineTotal) ? 0 : lineTotal;
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(String(genNo++), margin + 6, y + 6, { width: pColNo - 6 });
+            doc.text(cleanItemName(desc), margin + pColNo + 6, y + 6, { width: pColDesc - 12 });
+            doc.text(formatQuantity(qtyVal), margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
+            doc.text(formatAmountStar(lineTotalVal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
+            y += rowH;
+        });
+        if (genuineItems.length === 0) {
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
+            y += rowH;
+        }
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Genuine Spare Parts Total:", margin + pColNo + pColDesc - 20, y + 6, { width: 140, align: "right" });
+        doc.text(formatAmountStar(genuineTotal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
+        y += rowH + 10;
+        dashY();
+
+        // ─── 3. WORKSHOP PARTS & MATERIALS (Non-Genuine) ───
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+        doc.text("WORKSHOP PARTS & MATERIALS", margin, y, { width: contentWidth, align: "center" });
+        y += 14;
+
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("IT.NO.", margin + 6, y + 6, { width: pColNo - 6 });
+        doc.text("DESCRIPTION", margin + pColNo + 6, y + 6, { width: pColDesc - 6 });
+        doc.text("QUANTITY", margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
+        doc.text("TOTAL", margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
+        y += rowH;
+        dashY();
+
+        let nonGenNo = 1;
+        nonGenuineItems.forEach((item, i) => {
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
+            const qty = Number(item.quantity);
+            const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
+            const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
+            const lineTotal = Number(item.line_total);
+            const lineTotalVal = isNaN(lineTotal) ? 0 : lineTotal;
+            doc.font("Helvetica").fontSize(8).fillColor(DARK);
+            doc.text(String(nonGenNo++), margin + 6, y + 6, { width: pColNo - 6 });
+            doc.text(cleanItemName(desc), margin + pColNo + 6, y + 6, { width: pColDesc - 12 });
+            doc.text(formatQuantity(qtyVal), margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
+            doc.text(formatAmountStar(lineTotalVal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
+            y += rowH;
+        });
+        if (nonGenuineItems.length === 0) {
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
+            y += rowH;
+        }
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("None Genuine Spare Parts Total:", margin + pColNo + pColDesc - 20, y + 6, { width: 160, align: "right" });
+        doc.text(formatAmountStar(nonGenuineTotal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
+        y += rowH + 10;
+        dashY();
+
+        // ─── Date and Grand Total ───
+        doc.font("Helvetica").fontSize(9).fillColor(DARK);
+        doc.text(invoiceDateYyyymmdd, margin, y + 4);
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
+        doc.text("Grand Total:", pageWidth - margin - 130, y + 4, { width: 80, align: "right" });
+        doc.text(formatAmountStar(totalDue), pageWidth - margin - 48, y + 4, { width: 48, align: "right" });
+        y += 24;
+
+        // Reductions (if any) – show below Grand Total
+        if (reductions.length > 0) {
+            reductions.forEach((r) => {
+                doc.font("Helvetica").fontSize(8).fillColor(GRAY);
+                doc.text(`- ${r.label ?? "Discount"}: -${formatCurrency(r.amount ?? 0)}`, pageWidth - margin - 200, y + 2, { width: 200, align: "right" });
+                y += 12;
+            });
+            y += 6;
+        }
+
+        // ─── Signature lines ───
+        y += 16;
+        const sigLabels = ["Prepared By", "Checked By", "Approved By", "Customer Signature"];
+        const sigW = contentWidth / 4;
+        sigLabels.forEach((label, idx) => {
+            doc.moveTo(margin + idx * sigW + 8, y).lineTo(margin + (idx + 1) * sigW - 8, y).strokeColor(BORDER).lineWidth(0.5).stroke();
+            doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+            doc.text(label, margin + idx * sigW + 8, y + 6, { width: sigW - 16, align: "center" });
+        });
+        y += 28;
 
         // ═══════════════════════════════════════════════════════════
         // NOTES
@@ -756,6 +832,12 @@ const generateInvoicePdfBuffer = (invoice) =>
             width: contentWidth,
             align: "center" 
         });
+
+        // Footer lines (business info)
+        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
+        doc.text("We have the best-equipped automobile accident repair center in Kurunegala Srilanka", margin, finalFooterY + 24, { width: contentWidth, align: "center" });
+        doc.text("Authorized dealer for TOYOTA/NISSAN/SUZUKI/KIA/MICRO/MAHINDRA/CHERRY", margin, finalFooterY + 36, { width: contentWidth, align: "center" });
+        doc.text("E-mail : yasukiauto@gmail.com", margin, finalFooterY + 48, { width: contentWidth, align: "center" });
 
         doc.end();
     });
