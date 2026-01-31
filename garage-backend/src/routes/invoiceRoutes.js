@@ -543,79 +543,107 @@ const generateInvoicePdfBuffer = (invoice) =>
         }
 
         // ═══════════════════════════════════════════════════════════
-        // HEADER - LOGO + COMPANY DETAILS
+        // HEADER - LOGO + COMPANY DETAILS (Compact banner design)
         // ═══════════════════════════════════════════════════════════
-        const logoSize = 50;
+        const logoSize = 55; // Compact logo size for standard header
         const logoX = margin;
+        const headerStartY = y;
         
-        // Draw logo on left
+        // Draw company logo on left (compact banner design)
         if (fs.existsSync(logoPath)) {
-            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
+            try {
+                doc.image(logoPath, logoX, y, { 
+                    width: logoSize, 
+                    height: logoSize
+                });
+            } catch (err) {
+                console.error("Error loading company logo:", err.message);
+            }
         }
         
-        // Company details next to logo
-        const textX = margin + logoSize + 15;
+        // Company name next to logo - ensure it fits on one line
+        const textX = margin + logoSize + 12;
+        const companyNameWidth = contentWidth - (textX - margin) - 10; // Available width for company name
         
-        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
-        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
+        doc.font("Helvetica-Bold").fontSize(18).fillColor(PRIMARY);
+        // Ensure company name fits on one line by using available width
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 6, { 
+            width: companyNameWidth,
+            ellipsis: false
+        });
         
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
+        // Contact information below company name (compact spacing)
+        doc.font("Helvetica").fontSize(8).fillColor(DARK);
+        const contactY = y + 26;
+        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, contactY, {
+            width: companyNameWidth
+        });
         
-        // Add brand logos image directly below company details line in header section
+        // Calculate position for brand logos - compact spacing
+        const topSectionBottom = Math.max(y + logoSize, contactY + 10);
+        
+        // Add brand logos image spanning full width below contact info (compact)
         const brandLogosPath = path.join(__dirname, "../assets/Brand logos.png");
+        const brandLogosY = topSectionBottom + 10; // Compact spacing below contact info
+        
         if (fs.existsSync(brandLogosPath)) {
-            // Company details text is at y + 28, text line height is ~10, so logos start at y + 28 + 10 + 5 spacing
-            const brandLogosY = y + 43; // Position immediately below company details text
             const brandLogosWidth = contentWidth;
-            const brandLogosHeight = 40; // Reduced height while maintaining clarity
-            // Draw brand logos with both width and height to control exact positioning
-            doc.image(brandLogosPath, margin, brandLogosY, { 
-                width: brandLogosWidth,
-                height: brandLogosHeight
-            });
-            // Update y position to after logos
-            y = brandLogosY + brandLogosHeight + 10;
+            const brandLogosHeight = 50; // Compact height for standard header
+            
+            // Draw brand logos spanning full width - compact design
+            try {
+                doc.image(brandLogosPath, margin, brandLogosY, { 
+                    width: brandLogosWidth,
+                    height: brandLogosHeight
+                });
+                // Update y position to after logos
+                y = brandLogosY + brandLogosHeight + 8;
+            } catch (err) {
+                // If image fails to load, log error but continue
+                console.error("Error loading brand logos image:", err.message);
+                y = brandLogosY + 15;
+            }
         } else {
-            y += logoSize + 10;
+            console.warn("Brand logos image not found at:", brandLogosPath);
+            y = brandLogosY + 15;
         }
 
-        // Divider
-        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
+        // Red horizontal line at the bottom of header (matching banner design)
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(2).stroke();
         y += 15;
 
         // ═══════════════════════════════════════════════════════════
         // INVOICE TITLE & INFO
         // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(22).fillColor(DARK);
+        doc.font("Helvetica-Bold").fontSize(20).fillColor(DARK);
         doc.text("INVOICE", margin, y);
 
         // Invoice details (right)
         const invoiceNo = invoice.invoice_no ?? `INV-${String(invoice.id).padStart(5, "0")}`;
-        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
+        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
         doc.text(`Invoice #: ${invoiceNo}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
-        doc.text(`Date: ${formatDate(invoice.invoice_date)}`, pageWidth - margin - 180, y + 12, { width: 180, align: "right" });
-        doc.text(`Status: ${status}`, pageWidth - margin - 180, y + 24, { width: 180, align: "right" });
+        doc.text(`Date: ${formatDate(invoice.invoice_date)}`, pageWidth - margin - 180, y + 10, { width: 180, align: "right" });
+        doc.text(`Status: ${status}`, pageWidth - margin - 180, y + 20, { width: 180, align: "right" });
 
-        y += 40;
+        y += 32;
 
         // ═══════════════════════════════════════════════════════════
         // BILL TO SECTION
         // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
         doc.text("BILL TO:", margin, y);
-        y += 12;
-
-        doc.font("Helvetica").fontSize(9).fillColor(DARK);
-        doc.text(invoice.customer_name ?? "Walk-in Customer", margin, y);
-        y += 12;
-
-        doc.fillColor(GRAY).fontSize(8);
-        if (invoice.customer_phone) { doc.text(invoice.customer_phone, margin, y); y += 10; }
-        if (invoice.customer_email) { doc.text(invoice.customer_email, margin, y); y += 10; }
-        if (invoice.customer_address) { doc.text(invoice.customer_address, margin, y, { width: 250 }); y += 12; }
-
         y += 10;
+
+        doc.font("Helvetica").fontSize(8).fillColor(DARK);
+        doc.text(invoice.customer_name ?? "Walk-in Customer", margin, y);
+        y += 10;
+
+        doc.fillColor(GRAY).fontSize(7);
+        if (invoice.customer_phone) { doc.text(invoice.customer_phone, margin, y); y += 8; }
+        if (invoice.customer_email) { doc.text(invoice.customer_email, margin, y); y += 8; }
+        if (invoice.customer_address) { doc.text(invoice.customer_address, margin, y, { width: 250 }); y += 10; }
+
+        y += 8;
 
         // ═══════════════════════════════════════════════════════════
         // INVOICE DATA FORMAT: Workshop Charges, Genuine Parts, Non-Genuine Parts
@@ -782,21 +810,22 @@ const generateInvoicePdfBuffer = (invoice) =>
         // NOTES
         // ═══════════════════════════════════════════════════════════
         if (invoice.notes) {
-            doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
+            doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
             doc.text("Notes:", margin, y);
-            doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-            doc.text(invoice.notes, margin, y + 12, { width: contentWidth });
-            y += 30;
+            doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+            doc.text(invoice.notes, margin, y + 10, { width: contentWidth });
+            y += 20;
         }
 
         // ═══════════════════════════════════════════════════════════
-        // FOOTER
+        // FOOTER (Compact for one-page invoice)
         // ═══════════════════════════════════════════════════════════
-        // Ensure we have enough space for footer, add new page if needed
-        const footerSpace = 60;
+        // Compact footer to fit on one page - only add new page if absolutely necessary
+        const footerSpace = 50;
         const footerY = doc.page.height - margin - footerSpace;
         
-        if (y > footerY - 20) {
+        // Only add new page if content is very close to bottom (tight threshold)
+        if (y > footerY - 10) {
             doc.addPage();
             // Add watermark to new page
             if (fs.existsSync(logoPath)) {
@@ -813,31 +842,31 @@ const generateInvoicePdfBuffer = (invoice) =>
             y = margin + 40;
         }
         
-        // Position footer near bottom of current page
+        // Position footer near bottom of current page (compact)
         const finalFooterY = doc.page.height - margin - footerSpace;
         
-        // Draw thick dark gray horizontal line
+        // Draw compact dark gray horizontal line
         doc.save();
         doc.strokeColor("#374151"); // Dark gray color
-        doc.lineWidth(3);
+        doc.lineWidth(2);
         doc.moveTo(margin, finalFooterY)
             .lineTo(pageWidth - margin, finalFooterY)
             .stroke();
         doc.restore();
         
-        // Add thank you message below the line (centered, dark red)
-        doc.font("Helvetica").fontSize(10).fillColor(PRIMARY);
+        // Add thank you message below the line (centered, dark red, compact)
+        doc.font("Helvetica").fontSize(9).fillColor(PRIMARY);
         const thankYouText = "Thank you for choosing New Yasuki Auto Motors!";
-        doc.text(thankYouText, margin, finalFooterY + 10, { 
+        doc.text(thankYouText, margin, finalFooterY + 6, { 
             width: contentWidth,
             align: "center" 
         });
 
-        // Footer lines (business info)
-        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-        doc.text("We have the best-equipped automobile accident repair center in Kurunegala Srilanka", margin, finalFooterY + 24, { width: contentWidth, align: "center" });
-        doc.text("Authorized dealer for TOYOTA/NISSAN/SUZUKI/KIA/MICRO/MAHINDRA/CHERRY", margin, finalFooterY + 36, { width: contentWidth, align: "center" });
-        doc.text("E-mail : yasukiauto@gmail.com", margin, finalFooterY + 48, { width: contentWidth, align: "center" });
+        // Footer lines (business info, compact)
+        doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+        doc.text("We have the best-equipped automobile accident repair center in Kurunegala Srilanka", margin, finalFooterY + 18, { width: contentWidth, align: "center" });
+        doc.text("Authorized dealer for TOYOTA/NISSAN/SUZUKI/KIA/MICRO/MAHINDRA/CHERRY", margin, finalFooterY + 28, { width: contentWidth, align: "center" });
+        doc.text("E-mail : yasukiauto@gmail.com", margin, finalFooterY + 38, { width: contentWidth, align: "center" });
 
         doc.end();
     });
