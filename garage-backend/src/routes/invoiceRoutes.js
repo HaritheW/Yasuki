@@ -572,31 +572,28 @@ const generateInvoicePdfBuffer = (invoice) =>
             ellipsis: false
         });
         
-        // Contact information below company name (compact spacing)
-        doc.font("Helvetica").fontSize(8).fillColor(DARK);
-        const contactY = y + 26;
+        // Contact information below company name
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        const contactY = y + 28;
         doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, contactY, {
             width: companyNameWidth
         });
         
-        // Calculate position for brand logos - compact spacing
-        const topSectionBottom = Math.max(y + logoSize, contactY + 10);
-        
-        // Add brand logos image spanning full width below contact info (compact)
+        // Add brand logos immediately below contact line (matching image layout)
         const brandLogosPath = path.join(__dirname, "../assets/Brand logos.png");
-        const brandLogosY = topSectionBottom + 10; // Compact spacing below contact info
+        const brandLogosY = contactY + 12; // Minimal spacing - logos right after contact line
         
         if (fs.existsSync(brandLogosPath)) {
             const brandLogosWidth = contentWidth;
-            const brandLogosHeight = 50; // Compact height for standard header
+            const brandLogosHeight = 35; // Compact height matching the image
             
-            // Draw brand logos spanning full width - compact design
+            // Draw brand logos spanning full width
             try {
                 doc.image(brandLogosPath, margin, brandLogosY, { 
                     width: brandLogosWidth,
                     height: brandLogosHeight
                 });
-                // Update y position to after logos
+                // Update y position to after logos with minimal spacing
                 y = brandLogosY + brandLogosHeight + 8;
             } catch (err) {
                 // If image fails to load, log error but continue
