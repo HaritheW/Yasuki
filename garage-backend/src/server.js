@@ -53,6 +53,55 @@ db.run(
     }
 );
 
+// Allow InvoiceExtraItems.type = 'extra' on existing databases (SQLite cannot ALTER CHECK).
+db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'InvoiceExtraItems'`,
+    (err, row) => {
+        if (err) {
+            console.error("InvoiceExtraItems schema check failed:", err.message);
+            return;
+        }
+        if (!row || String(row.sql || "").includes("'extra'")) {
+            return;
+        }
+
+        db.serialize(() => {
+            db.run(
+                `
+                CREATE TABLE IF NOT EXISTS InvoiceExtraItems_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invoice_id INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    type TEXT CHECK(type IN ('charge', 'deduction', 'extra')) NOT NULL,
+                    amount REAL NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(invoice_id) REFERENCES Invoices(id)
+                );
+            `,
+                (createErr) => {
+                    if (createErr) {
+                        console.error("InvoiceExtraItems extra-type migration failed:", createErr.message);
+                    }
+                }
+            );
+            db.run(
+                `
+                INSERT INTO InvoiceExtraItems_new (id, invoice_id, label, type, amount, created_at)
+                SELECT id, invoice_id, label, type, amount, created_at FROM InvoiceExtraItems
+            `
+            );
+            db.run(`DROP TABLE InvoiceExtraItems`);
+            db.run(`ALTER TABLE InvoiceExtraItems_new RENAME TO InvoiceExtraItems`, (renameErr) => {
+                if (renameErr) {
+                    console.error("InvoiceExtraItems extra-type rename failed:", renameErr.message);
+                } else {
+                    console.log("InvoiceExtraItems now accepts extra items");
+                }
+            });
+        });
+    }
+);
+
 // Debug endpoint (no secrets) to verify SMTP env values are loaded correctly.
 // Only enabled when NODE_ENV !== "production".
 app.get("/debug/smtp", (req, res) => {

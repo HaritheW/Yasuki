@@ -355,9 +355,11 @@ const insertInvoiceExtraItems = async (invoiceId, entries = []) => {
     }
 };
 
-const calculateTotals = (items = [], charges = [], reductions = []) => {
+const calculateTotals = (items = [], charges = [], reductions = [], extras = []) => {
     const itemsTotal = roundCurrency(items.reduce((sum, item) => sum + (item.line_total || 0), 0));
-    const totalCharges = roundCurrency(charges.reduce((sum, entry) => sum + (entry.amount || 0), 0));
+    const totalLabour = roundCurrency(charges.reduce((sum, entry) => sum + (entry.amount || 0), 0));
+    const totalExtras = roundCurrency(extras.reduce((sum, entry) => sum + (entry.amount || 0), 0));
+    const totalCharges = roundCurrency(totalLabour + totalExtras);
     const totalDeductions = roundCurrency(
         reductions.reduce((sum, entry) => sum + (entry.amount || 0), 0)
     );
@@ -385,6 +387,15 @@ const recalculatePersistedTotals = async (invoiceId) => {
         [invoiceId]
     );
 
+    const extrasRow = await getAsync(
+        `
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM InvoiceExtraItems
+        WHERE invoice_id = ? AND type = 'extra'
+    `,
+        [invoiceId]
+    );
+
     const deductionsRow = await getAsync(
         `
         SELECT COALESCE(SUM(amount), 0) AS total
@@ -395,7 +406,7 @@ const recalculatePersistedTotals = async (invoiceId) => {
     );
 
     const itemsTotal = roundCurrency(itemsRow.total);
-    const totalCharges = roundCurrency(chargesRow.total);
+    const totalCharges = roundCurrency(Number(chargesRow.total ?? 0) + Number(extrasRow.total ?? 0));
     const totalDeductions = roundCurrency(deductionsRow.total);
     const finalTotal = roundCurrency(itemsTotal + totalCharges - totalDeductions);
 
@@ -412,10 +423,15 @@ const loadInvoiceDetails = async (invoiceId) => {
         `
         SELECT Invoices.*, Jobs.description AS job_description, Jobs.job_status,
                Jobs.initial_amount, Jobs.advance_amount, Jobs.mileage,
+               Vehicles.license_plate AS vehicle_license_plate,
+               Vehicles.make AS vehicle_make,
+               Vehicles.model AS vehicle_model,
+               Vehicles.year AS vehicle_year,
                Customers.id AS customer_id, Customers.name AS customer_name, Customers.email AS customer_email,
                Customers.phone AS customer_phone, Customers.address AS customer_address
         FROM Invoices
         LEFT JOIN Jobs ON Jobs.id = Invoices.job_id
+        LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
         LEFT JOIN Customers ON Customers.id = Jobs.customer_id
         WHERE Invoices.id = ?
     `,
@@ -448,7 +464,7 @@ const loadInvoiceDetails = async (invoiceId) => {
         genuine_or_non_genuine: row.genuine_or_non_genuine ?? row.Genuine_or_non_genuine,
     }));
 
-    const extras = await allAsync(
+    const extraRows = await allAsync(
         `
         SELECT id, label, type, amount
         FROM InvoiceExtraItems
@@ -461,8 +477,9 @@ const loadInvoiceDetails = async (invoiceId) => {
     return {
         ...invoice,
         items,
-        charges: extras.filter((entry) => entry.type === "charge"),
-        reductions: extras.filter((entry) => entry.type === "deduction"),
+        charges: extraRows.filter((entry) => entry.type === "charge"),
+        extras: extraRows.filter((entry) => entry.type === "extra"),
+        reductions: extraRows.filter((entry) => entry.type === "deduction"),
     };
 };
 
@@ -490,7 +507,6 @@ const generateInvoicePdfBuffer = (invoice) =>
         // Helper functions
         const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         const formatAmount = (val) => Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const formatAmountStar = (val) => `${formatAmount(val)}*`;
         const formatQuantity = (val) => Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
         const formatDate = (val) => {
             if (!val) return "N/A";
@@ -505,153 +521,47 @@ const generateInvoicePdfBuffer = (invoice) =>
                   });
         };
 
-        // Data – split for invoice format: Workshop Charges (labour), Genuine parts, Non-Genuine parts
+        // Data – Workshop Charges (labour) + one parts table with genuine / non-genuine column
         const items = invoice.items ?? [];
         const charges = invoice.charges ?? [];
+        const extras = invoice.extras ?? [];
         const reductions = invoice.reductions ?? [];
         // Normalize genuine flag (handle casing/whitespace; null/undefined = non-genuine)
         const isGenuine = (i) => String(i.genuine_or_non_genuine || "").toLowerCase().trim() === "genuine";
+        const genuineLabel = (i) => (isGenuine(i) ? "Genuine" : "Non Genuine");
         const genuineItems = items.filter(isGenuine);
         const nonGenuineItems = items.filter((i) => !isGenuine(i));
         const labourTotal = charges.reduce((s, c) => s + Number(c.amount ?? 0), 0);
+        const extraTotal = extras.reduce((s, e) => s + Number(e.amount ?? 0), 0);
         const genuineTotal = genuineItems.reduce((s, i) => s + Number(i.line_total ?? 0), 0);
         const nonGenuineTotal = nonGenuineItems.reduce((s, i) => s + Number(i.line_total ?? 0), 0);
-        const subtotal = labourTotal + genuineTotal + nonGenuineTotal;
+        const partsTotal = genuineTotal + nonGenuineTotal;
+        const subtotal = labourTotal + partsTotal + extraTotal;
         const totalReductions = reductions.reduce((s, r) => s + Number(r.amount ?? 0), 0);
         const totalDue = invoice.final_total ?? subtotal - totalReductions;
         const status = (invoice.payment_status ?? "unpaid").charAt(0).toUpperCase() + (invoice.payment_status ?? "unpaid").slice(1);
-        const invoiceDateYyyymmdd = invoice.invoice_date
-            ? new Date(invoice.invoice_date).toISOString().slice(0, 10).replace(/-/g, "")
-            : "";
 
-        let y = margin;
-
-        // ═══════════════════════════════════════════════════════════
-        // WATERMARK LOGO (centered, semi-transparent)
-        // ═══════════════════════════════════════════════════════════
-        const logoPath = path.join(__dirname, "../assets/logo.jpg");
-        if (fs.existsSync(logoPath)) {
-            doc.save();
-            doc.opacity(0.15);
-            const logoWidth = 400;
-            const logoHeight = 230;
-            const logoX = (pageWidth - logoWidth) / 2;
-            const logoY = (doc.page.height - logoHeight) / 2;
-            doc.image(logoPath, logoX, logoY, { width: logoWidth });
-            doc.restore();
-            doc.opacity(1);
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // HEADER - LOGO + COMPANY DETAILS (Compact banner design)
-        // ═══════════════════════════════════════════════════════════
-        const logoSize = 55; // Compact logo size for standard header
-        const logoX = margin;
-        const headerStartY = y;
-        
-        // Draw company logo on left (compact banner design)
-        if (fs.existsSync(logoPath)) {
-            try {
-                doc.image(logoPath, logoX, y, { 
-                    width: logoSize, 
-                    height: logoSize
-                });
-            } catch (err) {
-                console.error("Error loading company logo:", err.message);
-            }
-        }
-        
-        // Company name next to logo - ensure it fits on one line
-        const textX = margin + logoSize + 12;
-        const companyNameWidth = contentWidth - (textX - margin) - 10; // Available width for company name
-        
-        doc.font("Helvetica-Bold").fontSize(18).fillColor(PRIMARY);
-        // Ensure company name fits on one line by using available width
-        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 6, { 
-            width: companyNameWidth,
-            ellipsis: false
-        });
-        
-        // Contact information below company name
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        const contactY = y + 28;
-        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, contactY, {
-            width: companyNameWidth
-        });
-        
-        // Add brand logos immediately below contact line (matching image layout)
-        const brandLogosPath = path.join(__dirname, "../assets/Brand logos.png");
-        const brandLogosY = contactY + 12; // Minimal spacing - logos right after contact line
-        
-        if (fs.existsSync(brandLogosPath)) {
-            const brandLogosWidth = contentWidth;
-            const brandLogosHeight = 35; // Compact height matching the image
-            
-            // Draw brand logos spanning full width
-            try {
-                doc.image(brandLogosPath, margin, brandLogosY, { 
-                    width: brandLogosWidth,
-                    height: brandLogosHeight
-                });
-                // Update y position to after logos with minimal spacing
-                y = brandLogosY + brandLogosHeight + 8;
-            } catch (err) {
-                // If image fails to load, log error but continue
-                console.error("Error loading brand logos image:", err.message);
-                y = brandLogosY + 15;
-            }
-        } else {
-            console.warn("Brand logos image not found at:", brandLogosPath);
-            y = brandLogosY + 15;
-        }
-
-        // Red horizontal line at the bottom of header (matching banner design)
-        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(2).stroke();
-        y += 15;
-
-        // ═══════════════════════════════════════════════════════════
-        // INVOICE TITLE & INFO
-        // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(20).fillColor(DARK);
-        doc.text("INVOICE", margin, y);
-
-        // Invoice details (right)
         const invoiceNo = invoice.invoice_no ?? `INV-${String(invoice.id).padStart(5, "0")}`;
-        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-        doc.text(`Invoice #: ${invoiceNo}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
-        doc.text(`Date: ${formatDate(invoice.invoice_date)}`, pageWidth - margin - 180, y + 10, { width: 180, align: "right" });
-        doc.text(`Status: ${status}`, pageWidth - margin - 180, y + 20, { width: 180, align: "right" });
+        const plate = String(invoice.vehicle_license_plate ?? "").trim() || "—";
+        const hasMileage = invoice.mileage !== null && invoice.mileage !== undefined && invoice.mileage !== "";
+        const mileageText = hasMileage
+            ? `${Number(invoice.mileage).toLocaleString("en-US", {
+                  maximumFractionDigits: 2,
+                  minimumFractionDigits: Number(invoice.mileage) % 1 === 0 ? 0 : 2,
+              })} km`
+            : "—";
+        const vehicleBits = [invoice.vehicle_make, invoice.vehicle_model, invoice.vehicle_year]
+            .map((part) => String(part ?? "").trim())
+            .filter(Boolean);
+        const vehicleDescription = vehicleBits.length ? vehicleBits.join(" ") : "—";
+        const paymentMethod = String(invoice.payment_method ?? "").trim() || "Not specified";
+        const jobSummary = String(invoice.job_description ?? "").trim() || "—";
+        const estimateAmount =
+            invoice.initial_amount !== null && invoice.initial_amount !== undefined
+                ? formatCurrency(invoice.initial_amount)
+                : "—";
+        const advanceReduction = reductions.find((entry) => String(entry.label ?? "").toLowerCase() === "advance");
 
-        y += 32;
-
-        // ═══════════════════════════════════════════════════════════
-        // BILL TO SECTION
-        // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("BILL TO:", margin, y);
-        y += 10;
-
-        doc.font("Helvetica").fontSize(8).fillColor(DARK);
-        doc.text(invoice.customer_name ?? "Walk-in Customer", margin, y);
-        y += 10;
-
-        doc.fillColor(GRAY).fontSize(7);
-        if (invoice.customer_phone) { doc.text(invoice.customer_phone, margin, y); y += 8; }
-        if (invoice.customer_email) { doc.text(invoice.customer_email, margin, y); y += 8; }
-        if (invoice.customer_address) { doc.text(invoice.customer_address, margin, y, { width: 250 }); y += 10; }
-
-        y += 8;
-
-        // ═══════════════════════════════════════════════════════════
-        // INVOICE DATA FORMAT: Workshop Charges, Genuine Parts, Non-Genuine Parts
-        // ═══════════════════════════════════════════════════════════
-        const rowH = 20;
-        const dashY = () => {
-            doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += 8;
-        };
-
-        // Helper to clean item name (remove quantity pattern)
         const cleanItemName = (itemName) => {
             if (!itemName || typeof itemName !== "string") return itemName;
             return itemName
@@ -660,210 +570,373 @@ const generateInvoicePdfBuffer = (invoice) =>
                 .trim();
         };
 
-        // ─── 1. WORKSHOP CHARGES (Labour) ───
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
-        doc.text("WORKSHOP CHARGES", margin, y, { width: contentWidth, align: "center" });
-        y += 14;
+        const HEADER_BG = "#F3F4F6";
+        const rowH = 18;
+        const footerSpace = 46;
+        let y = margin;
 
-        const cColNo = 40;
-        const cColDesc = contentWidth - cColNo - 90;
-        const cColAmt = 90;
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("ITEM NO.", margin + 6, y + 6, { width: cColNo - 6 });
-        doc.text("DESCRIPTION", margin + cColNo + 6, y + 6, { width: cColDesc - 6 });
-        doc.text("AMOUNT", margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
-        y += rowH;
-        dashY();
+        const logoPath = path.join(__dirname, "../assets/logo.jpg");
+        const brandLogosPath = path.join(__dirname, "../assets/Brand logos.png");
 
-        let chargeNo = 1;
-        charges.forEach((c, i) => {
-            if (i > 0) doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(chargeNo++), margin + 6, y + 6, { width: cColNo - 6 });
-            doc.text(cleanItemName(c.label ?? "Charge"), margin + cColNo + 6, y + 6, { width: cColDesc - 12 });
-            doc.text(formatAmountStar(c.amount ?? 0), margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
-            y += rowH;
-        });
-        if (charges.length === 0) {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += rowH;
-        }
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("Labour Total:", margin + cColNo + cColDesc - 80, y + 6, { width: 80, align: "right" });
-        doc.text(formatAmountStar(labourTotal), margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
-        y += rowH + 10;
-        dashY();
+        const drawWatermark = () => {
+            if (!fs.existsSync(logoPath)) return;
+            doc.save();
+            doc.opacity(0.08);
+            doc.image(logoPath, (pageWidth - 360) / 2, (doc.page.height - 200) / 2, { width: 360 });
+            doc.restore();
+            doc.opacity(1);
+        };
 
-        // ─── 2. WORKSHOP PARTS & MATERIALS (Genuine) ───
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
-        doc.text("WORKSHOP PARTS & MATERIALS", margin, y, { width: contentWidth, align: "center" });
-        y += 14;
-
-        const pColNo = 35;
-        const pColDesc = 260;
-        const pColQty = 55;
-        const pColTotal = contentWidth - pColNo - pColDesc - pColQty;
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("IT.NO.", margin + 6, y + 6, { width: pColNo - 6 });
-        doc.text("DESCRIPTION", margin + pColNo + 6, y + 6, { width: pColDesc - 6 });
-        doc.text("QUANTITY", margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-        doc.text("TOTAL", margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH;
-        dashY();
-
-        let genNo = 1;
-        genuineItems.forEach((item, i) => {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            const qty = Number(item.quantity);
-            const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
-            const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
-            const lineTotal = Number(item.line_total);
-            const lineTotalVal = isNaN(lineTotal) ? 0 : lineTotal;
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(genNo++), margin + 6, y + 6, { width: pColNo - 6 });
-            doc.text(cleanItemName(desc), margin + pColNo + 6, y + 6, { width: pColDesc - 12 });
-            doc.text(formatQuantity(qtyVal), margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-            doc.text(formatAmountStar(lineTotalVal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-            y += rowH;
-        });
-        if (genuineItems.length === 0) {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += rowH;
-        }
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("Genuine Spare Parts Total:", margin + pColNo + pColDesc - 20, y + 6, { width: 140, align: "right" });
-        doc.text(formatAmountStar(genuineTotal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH + 10;
-        dashY();
-
-        // ─── 3. WORKSHOP PARTS & MATERIALS (Non-Genuine) ───
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
-        doc.text("WORKSHOP PARTS & MATERIALS", margin, y, { width: contentWidth, align: "center" });
-        y += 14;
-
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("IT.NO.", margin + 6, y + 6, { width: pColNo - 6 });
-        doc.text("DESCRIPTION", margin + pColNo + 6, y + 6, { width: pColDesc - 6 });
-        doc.text("QUANTITY", margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-        doc.text("TOTAL", margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH;
-        dashY();
-
-        let nonGenNo = 1;
-        nonGenuineItems.forEach((item, i) => {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            const qty = Number(item.quantity);
-            const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
-            const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
-            const lineTotal = Number(item.line_total);
-            const lineTotalVal = isNaN(lineTotal) ? 0 : lineTotal;
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(nonGenNo++), margin + 6, y + 6, { width: pColNo - 6 });
-            doc.text(cleanItemName(desc), margin + pColNo + 6, y + 6, { width: pColDesc - 12 });
-            doc.text(formatQuantity(qtyVal), margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-            doc.text(formatAmountStar(lineTotalVal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-            y += rowH;
-        });
-        if (nonGenuineItems.length === 0) {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += rowH;
-        }
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("None Genuine Spare Parts Total:", margin + pColNo + pColDesc - 20, y + 6, { width: 160, align: "right" });
-        doc.text(formatAmountStar(nonGenuineTotal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH + 10;
-        dashY();
-
-        // ─── Date and Grand Total ───
-        doc.font("Helvetica").fontSize(9).fillColor(DARK);
-        doc.text(invoiceDateYyyymmdd, margin, y + 4);
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
-        doc.text("Grand Total:", pageWidth - margin - 130, y + 4, { width: 80, align: "right" });
-        doc.text(formatAmountStar(totalDue), pageWidth - margin - 48, y + 4, { width: 48, align: "right" });
-        y += 24;
-
-        // Reductions (if any) – show below Grand Total
-        if (reductions.length > 0) {
-            reductions.forEach((r) => {
-                doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-                doc.text(`- ${r.label ?? "Discount"}: -${formatCurrency(r.amount ?? 0)}`, pageWidth - margin - 200, y + 2, { width: 200, align: "right" });
-                y += 12;
-            });
-            y += 6;
-        }
-
-        // ─── Signature lines ───
-        y += 16;
-        const sigLabels = ["Prepared By", "Checked By", "Approved By", "Customer Signature"];
-        const sigW = contentWidth / 4;
-        sigLabels.forEach((label, idx) => {
-            doc.moveTo(margin + idx * sigW + 8, y).lineTo(margin + (idx + 1) * sigW - 8, y).strokeColor(BORDER).lineWidth(0.5).stroke();
-            doc.font("Helvetica").fontSize(7).fillColor(GRAY);
-            doc.text(label, margin + idx * sigW + 8, y + 6, { width: sigW - 16, align: "center" });
-        });
-        y += 28;
-
-        // ═══════════════════════════════════════════════════════════
-        // NOTES
-        // ═══════════════════════════════════════════════════════════
-        if (invoice.notes) {
-            doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-            doc.text("Notes:", margin, y);
-            doc.font("Helvetica").fontSize(7).fillColor(GRAY);
-            doc.text(invoice.notes, margin, y + 10, { width: contentWidth });
-            y += 20;
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // FOOTER (Compact for one-page invoice)
-        // ═══════════════════════════════════════════════════════════
-        // Compact footer to fit on one page - only add new page if absolutely necessary
-        const footerSpace = 50;
-        const footerY = doc.page.height - margin - footerSpace;
-        
-        // Only add new page if content is very close to bottom (tight threshold)
-        if (y > footerY - 10) {
+        const ensureSpace = (needed) => {
+            const limit = doc.page.height - margin - footerSpace - 8;
+            if (y + needed <= limit) return;
             doc.addPage();
-            // Add watermark to new page
-            if (fs.existsSync(logoPath)) {
-                doc.save();
-                doc.opacity(0.15);
-                const logoWidth = 400;
-                const logoHeight = 230;
-                const logoX = (pageWidth - logoWidth) / 2;
-                const logoY = (doc.page.height - logoHeight) / 2;
-                doc.image(logoPath, logoX, logoY, { width: logoWidth });
-                doc.restore();
-                doc.opacity(1);
+            drawWatermark();
+            y = margin;
+        };
+
+        const drawSectionTitle = (title) => {
+            ensureSpace(36);
+            doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
+            doc.text(title, margin, y);
+            y += 16;
+        };
+
+        const drawHeaderRow = (columns) => {
+            doc.rect(margin, y, contentWidth, rowH).fill(HEADER_BG);
+            doc.fillColor(DARK).font("Helvetica-Bold").fontSize(7.5);
+            columns.forEach((col) => {
+                doc.text(col.label, col.x, y + 5, { width: col.w, align: col.align || "left" });
+            });
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.6).stroke();
+            y += rowH;
+        };
+
+        const drawDataRow = (columns, { bold = false, fill = null } = {}) => {
+            if (fill) {
+                doc.rect(margin, y, contentWidth, rowH).fill(fill);
             }
-            y = margin + 40;
+            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.4).stroke();
+            doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(8).fillColor(DARK);
+            columns.forEach((col) => {
+                doc.text(String(col.text ?? ""), col.x, y + 5, { width: col.w, align: col.align || "left" });
+            });
+            y += rowH;
+        };
+
+        const drawMetaPair = (label, value, x, startY, width) => {
+            doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+            doc.text(label, x, startY, { width });
+            doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+            doc.text(value, x, startY + 10, { width });
+            return startY + 24;
+        };
+
+        drawWatermark();
+
+        // Header banner: logo + red company name + contact + brand logos + red rule
+        const logoSize = 52;
+        if (fs.existsSync(logoPath)) {
+            try {
+                doc.image(logoPath, margin, y, { width: logoSize, height: logoSize });
+            } catch (err) {
+                console.error("Error loading company logo:", err.message);
+            }
         }
-        
-        // Position footer near bottom of current page (compact)
-        const finalFooterY = doc.page.height - margin - footerSpace;
-        
-        // Draw compact dark gray horizontal line
-        doc.save();
-        doc.strokeColor("#374151"); // Dark gray color
-        doc.lineWidth(2);
-        doc.moveTo(margin, finalFooterY)
-            .lineTo(pageWidth - margin, finalFooterY)
-            .stroke();
-        doc.restore();
-        
-        // Add thank you message below the line (centered, dark red, compact)
-        doc.font("Helvetica").fontSize(9).fillColor(PRIMARY);
-        const thankYouText = "Thank you for choosing New Yasuki Auto Motors!";
-        doc.text(thankYouText, margin, finalFooterY + 6, { 
-            width: contentWidth,
-            align: "center" 
+
+        const brandX = margin + logoSize + 12;
+        const brandW = contentWidth - logoSize - 12;
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
+        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", brandX, y + 6, { width: brandW });
+        doc.font("Helvetica").fontSize(8).fillColor(PRIMARY);
+        doc.text(
+            "Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com",
+            brandX,
+            y + 28,
+            { width: brandW }
+        );
+
+        y += logoSize + 8;
+
+        if (fs.existsSync(brandLogosPath)) {
+            try {
+                doc.image(brandLogosPath, margin, y, { width: contentWidth, height: 32 });
+                y += 40;
+            } catch (err) {
+                console.error("Error loading brand logos image:", err.message);
+                y += 8;
+            }
+        }
+
+        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(2).stroke();
+        y += 14;
+
+        doc.font("Helvetica-Bold").fontSize(18).fillColor(DARK);
+        doc.text("INVOICE", margin, y);
+        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
+        doc.text(`Invoice #: ${invoiceNo}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
+        doc.text(`Date: ${formatDate(invoice.invoice_date)}`, pageWidth - margin - 180, y + 11, { width: 180, align: "right" });
+        doc.text(`Status: ${status}  •  ${paymentMethod}`, pageWidth - margin - 180, y + 22, { width: 180, align: "right" });
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(PRIMARY);
+        doc.text(formatCurrency(totalDue), pageWidth - margin - 180, y + 34, { width: 180, align: "right" });
+        y += 52;
+
+        // Two-column details
+        const colW = (contentWidth - 20) / 2;
+        const rightX = margin + colW + 20;
+        let leftY = y;
+        let rightY = y;
+
+        leftY = drawMetaPair("Invoice number", invoiceNo, margin, leftY, colW);
+        leftY = drawMetaPair(
+            "Issued on",
+            `${formatDate(invoice.invoice_date)}${invoice.job_id ? `  •  Job #${invoice.job_id}` : ""}`,
+            margin,
+            leftY,
+            colW
+        );
+        doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+        doc.text("Bill to", margin, leftY);
+        leftY += 10;
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
+        doc.text(invoice.customer_name ?? "Walk-in Customer", margin, leftY, { width: colW });
+        leftY += 12;
+        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
+        if (invoice.customer_email) {
+            doc.text(invoice.customer_email, margin, leftY, { width: colW });
+            leftY += 11;
+        }
+        if (invoice.customer_phone) {
+            doc.text(invoice.customer_phone, margin, leftY, { width: colW });
+            leftY += 11;
+        }
+        if (invoice.customer_address) {
+            const addressHeight = doc.heightOfString(invoice.customer_address, { width: colW });
+            doc.text(invoice.customer_address, margin, leftY, { width: colW });
+            leftY += addressHeight + 4;
+        }
+
+        rightY = drawMetaPair("Vehicle No", plate, rightX, rightY, colW);
+        rightY = drawMetaPair("Mileage", mileageText, rightX, rightY, colW);
+        rightY = drawMetaPair("Vehicle", vehicleDescription, rightX, rightY, colW);
+        rightY = drawMetaPair("Job summary", jobSummary, rightX, rightY, colW);
+        rightY = drawMetaPair("Initial estimate", estimateAmount, rightX, rightY, colW);
+        if (advanceReduction) {
+            rightY = drawMetaPair("Advance received", formatCurrency(advanceReduction.amount), rightX, rightY, colW);
+        }
+
+        y = Math.max(leftY, rightY) + 10;
+
+        // ─── WORKSHOP CHARGES ───
+        const cColNo = 36;
+        const cColAmt = 90;
+        const cColDesc = contentWidth - cColNo - cColAmt;
+        drawSectionTitle("WORKSHOP CHARGES");
+        drawHeaderRow([
+            { label: "NO", x: margin + 6, w: cColNo - 6 },
+            { label: "DESCRIPTION", x: margin + cColNo + 6, w: cColDesc - 12 },
+            { label: "AMOUNT (LKR)", x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+        ]);
+        if (charges.length === 0) {
+            ensureSpace(rowH);
+            drawDataRow([
+                { text: "—", x: margin + 6, w: cColNo - 6 },
+                { text: "No workshop charges", x: margin + cColNo + 6, w: cColDesc - 12 },
+                { text: formatAmount(0), x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+            ]);
+        } else {
+            charges.forEach((entry, index) => {
+                ensureSpace(rowH);
+                drawDataRow([
+                    { text: String(index + 1), x: margin + 6, w: cColNo - 6 },
+                    { text: cleanItemName(entry.label ?? "Charge"), x: margin + cColNo + 6, w: cColDesc - 12 },
+                    { text: formatAmount(entry.amount ?? 0), x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+                ]);
+            });
+        }
+        ensureSpace(rowH);
+        drawDataRow(
+            [
+                { text: "", x: margin + 6, w: cColNo - 6 },
+                { text: "Labour Total", x: margin + cColNo + 6, w: cColDesc - 12 },
+                { text: formatAmount(labourTotal), x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+            ],
+            { bold: true, fill: LIGHT }
+        );
+        y += 12;
+
+        // ─── WORKSHOP PARTS & MATERIALS ───
+        const pColNo = 32;
+        const pColType = 72;
+        const pColQty = 54;
+        const pColTotal = 78;
+        const pColDesc = contentWidth - pColNo - pColType - pColQty - pColTotal;
+        const pTypeX = margin + pColNo + pColDesc;
+        const pQtyX = pTypeX + pColType;
+        const pTotalX = pQtyX + pColQty;
+        drawSectionTitle("WORKSHOP PARTS & MATERIALS");
+        drawHeaderRow([
+            { label: "NO", x: margin + 6, w: pColNo - 6 },
+            { label: "DESCRIPTION", x: margin + pColNo + 6, w: pColDesc - 12 },
+            { label: "TYPE", x: pTypeX, w: pColType, align: "center" },
+            { label: "QTY", x: pQtyX, w: pColQty, align: "right" },
+            { label: "TOTAL (LKR)", x: pTotalX, w: pColTotal - 6, align: "right" },
+        ]);
+        if (items.length === 0) {
+            ensureSpace(rowH);
+            drawDataRow([
+                { text: "—", x: margin + 6, w: pColNo - 6 },
+                { text: "No parts used", x: margin + pColNo + 6, w: pColDesc - 12 },
+                { text: "—", x: pTypeX, w: pColType, align: "center" },
+                { text: "—", x: pQtyX, w: pColQty, align: "right" },
+                { text: formatAmount(0), x: pTotalX, w: pColTotal - 6, align: "right" },
+            ]);
+        } else {
+            items.forEach((item, index) => {
+                ensureSpace(rowH);
+                const qty = Number(item.quantity);
+                const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
+                const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
+                drawDataRow([
+                    { text: String(index + 1), x: margin + 6, w: pColNo - 6 },
+                    { text: cleanItemName(desc), x: margin + pColNo + 6, w: pColDesc - 12 },
+                    { text: genuineLabel(item), x: pTypeX, w: pColType, align: "center" },
+                    { text: formatQuantity(qtyVal), x: pQtyX, w: pColQty, align: "right" },
+                    { text: formatAmount(item.line_total ?? 0), x: pTotalX, w: pColTotal - 6, align: "right" },
+                ]);
+            });
+        }
+        const partsTotalCols = (label, amount, bold = false) =>
+            drawDataRow(
+                [
+                    { text: "", x: margin + 6, w: pColNo - 6 },
+                    { text: label, x: margin + pColNo + 6, w: pColDesc + pColType + pColQty - 12, align: "right" },
+                    { text: formatAmount(amount), x: pTotalX, w: pColTotal - 6, align: "right" },
+                ],
+                { bold, fill: LIGHT }
+            );
+        ensureSpace(rowH * 3);
+        partsTotalCols("Genuine Spare Parts Total", genuineTotal);
+        partsTotalCols("Non Genuine Spare Parts Total", nonGenuineTotal);
+        partsTotalCols("WORKSHOP PARTS & MATERIALS", partsTotal, true);
+        y += 12;
+
+        // ─── EXTRA ───
+        drawSectionTitle("EXTRA");
+        drawHeaderRow([
+            { label: "NO", x: margin + 6, w: cColNo - 6 },
+            { label: "DESCRIPTION", x: margin + cColNo + 6, w: cColDesc - 12 },
+            { label: "AMOUNT (LKR)", x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+        ]);
+        if (extras.length === 0) {
+            ensureSpace(rowH);
+            drawDataRow([
+                { text: "—", x: margin + 6, w: cColNo - 6 },
+                { text: "No extras", x: margin + cColNo + 6, w: cColDesc - 12 },
+                { text: formatAmount(0), x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+            ]);
+        } else {
+            extras.forEach((entry, index) => {
+                ensureSpace(rowH);
+                drawDataRow([
+                    { text: String(index + 1), x: margin + 6, w: cColNo - 6 },
+                    { text: cleanItemName(entry.label ?? "Extra"), x: margin + cColNo + 6, w: cColDesc - 12 },
+                    { text: formatAmount(entry.amount ?? 0), x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+                ]);
+            });
+        }
+        ensureSpace(rowH);
+        drawDataRow(
+            [
+                { text: "", x: margin + 6, w: cColNo - 6 },
+                { text: "Extra Total", x: margin + cColNo + 6, w: cColDesc - 12 },
+                { text: formatAmount(extraTotal), x: margin + cColNo + cColDesc, w: cColAmt - 6, align: "right" },
+            ],
+            { bold: true, fill: LIGHT }
+        );
+        y += 16;
+
+        // Summary cards
+        const cardGap = 16;
+        const cardW = (contentWidth - cardGap) / 2;
+        const reductionLines = Math.max(reductions.length, 1) + 2;
+        const cardH = Math.max(72, 28 + reductionLines * 14);
+        ensureSpace(cardH + 20);
+
+        const drawCard = (x, title, lines, emphasizeLast = false) => {
+            doc.roundedRect(x, y, cardW, cardH, 4).strokeColor(BORDER).lineWidth(0.8).stroke();
+            doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
+            doc.text(title, x + 10, y + 8, { width: cardW - 20 });
+            let lineY = y + 26;
+            lines.forEach((line, index) => {
+                const isLast = index === lines.length - 1;
+                doc.font(isLast && emphasizeLast ? "Helvetica-Bold" : "Helvetica").fontSize(8);
+                doc.fillColor(isLast && emphasizeLast ? PRIMARY : GRAY);
+                doc.text(line.label, x + 10, lineY, { width: cardW - 90 });
+                doc.fillColor(isLast && emphasizeLast ? PRIMARY : DARK);
+                doc.text(line.value, x + cardW - 86, lineY, { width: 76, align: "right" });
+                lineY += 14;
+            });
+        };
+
+        drawCard(
+            margin,
+            "Services total",
+            [
+                { label: "Workshop charges", value: formatCurrency(labourTotal) },
+                { label: "Parts & materials", value: formatCurrency(partsTotal) },
+                { label: "Extras", value: formatCurrency(extraTotal) },
+                { label: "Reductions & credits", value: formatCurrency(totalReductions) },
+                { label: "Balance due", value: formatCurrency(totalDue) },
+            ],
+            true
+        );
+        drawCard(margin + cardW + cardGap, "Reductions", [
+            ...reductions.map((entry) => ({
+                label: entry.label ?? "Reduction",
+                value: formatCurrency(entry.amount ?? 0),
+            })),
+            ...(reductions.length === 0 ? [{ label: "No reductions", value: formatCurrency(0) }] : []),
+            { label: "Total reductions", value: formatCurrency(totalReductions) },
+        ]);
+        y += cardH + 18;
+
+        // Notes + signatures
+        ensureSpace(70);
+        const noteW = contentWidth * 0.42;
+        const sigW = (contentWidth - noteW) / 2;
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
+        doc.text("Additional notes", margin, y);
+        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
+        doc.text(invoice.notes || "Thank you for choosing New Yasuki Auto Motors.", margin, y + 12, {
+            width: noteW - 12,
         });
 
-        // Footer lines (business info, compact)
+        const sigY = y + 28;
+        doc.moveTo(margin + noteW, sigY).lineTo(margin + noteW + sigW - 16, sigY).strokeColor(BORDER).lineWidth(0.7).stroke();
+        doc.moveTo(margin + noteW + sigW, sigY).lineTo(pageWidth - margin, sigY).strokeColor(BORDER).lineWidth(0.7).stroke();
         doc.font("Helvetica").fontSize(7).fillColor(GRAY);
-        doc.text("We have the best-equipped automobile accident repair center in Kurunegala Srilanka", margin, finalFooterY + 18, { width: contentWidth, align: "center" });
-        doc.text("Authorized dealer for TOYOTA/NISSAN/SUZUKI/KIA/MICRO/MAHINDRA/CHERRY", margin, finalFooterY + 28, { width: contentWidth, align: "center" });
-        doc.text("E-mail : yasukiauto@gmail.com", margin, finalFooterY + 38, { width: contentWidth, align: "center" });
+        doc.text("Customer Signature", margin + noteW, sigY + 6, { width: sigW - 16, align: "center" });
+        doc.text("Authorized Signature", margin + noteW + sigW, sigY + 6, { width: sigW, align: "center" });
+        y += 58;
+
+        // Footer
+        const finalFooterY = doc.page.height - margin - footerSpace;
+        doc.moveTo(margin, finalFooterY).lineTo(pageWidth - margin, finalFooterY).strokeColor("#374151").lineWidth(1.5).stroke();
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(PRIMARY);
+        doc.text("Thank you for choosing New Yasuki Auto Motors!", margin, finalFooterY + 6, {
+            width: contentWidth,
+            align: "center",
+        });
+        doc.font("Helvetica").fontSize(7).fillColor(GRAY);
+        doc.text("We have the best-equipped automobile accident repair center in Kurunegala, Sri Lanka", margin, finalFooterY + 18, {
+            width: contentWidth,
+            align: "center",
+        });
+        doc.text("Authorized dealer for TOYOTA / NISSAN / SUZUKI / KIA / MICRO / MAHINDRA / CHERRY", margin, finalFooterY + 28, {
+            width: contentWidth,
+            align: "center",
+        });
 
         doc.end();
     });
@@ -874,6 +947,7 @@ router.post("/", async (req, res) => {
         job_id,
         items = [],
         charges,
+        extras,
         reductions,
         payment_method,
         payment_status = "unpaid",
@@ -927,9 +1001,10 @@ router.post("/", async (req, res) => {
         }
 
         const preparedCharges = prepareExtraItems(rawCharges, "charge");
+        const preparedExtras = prepareExtraItems(Array.isArray(extras) ? extras : [], "extra");
         const preparedReductions = prepareExtraItems(rawReductions, "deduction");
 
-        const totals = calculateTotals(preparedItems, preparedCharges, preparedReductions);
+        const totals = calculateTotals(preparedItems, preparedCharges, preparedReductions, preparedExtras);
         const invoiceNo = await generateInvoiceNumber();
 
         const invoiceResult = await runAsync(
@@ -962,7 +1037,7 @@ router.post("/", async (req, res) => {
         const invoiceId = invoiceResult.lastID;
 
         await insertInvoiceItems(invoiceId, preparedItems, { invoiceNo });
-        await insertInvoiceExtraItems(invoiceId, [...preparedCharges, ...preparedReductions]);
+        await insertInvoiceExtraItems(invoiceId, [...preparedCharges, ...preparedExtras, ...preparedReductions]);
 
         await runAsync("COMMIT");
 
@@ -1012,9 +1087,15 @@ router.get("/", async (req, res) => {
     try {
         const invoices = await allAsync(
             `
-            SELECT Invoices.*, Customers.name AS customer_name
+            SELECT Invoices.*, Customers.name AS customer_name,
+                   Jobs.mileage,
+                   Vehicles.license_plate AS vehicle_license_plate,
+                   Vehicles.make AS vehicle_make,
+                   Vehicles.model AS vehicle_model,
+                   Vehicles.year AS vehicle_year
             FROM Invoices
             LEFT JOIN Jobs ON Jobs.id = Invoices.job_id
+            LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
             LEFT JOIN Customers ON Customers.id = Jobs.customer_id
             ${whereClause}
             ORDER BY invoice_date DESC
@@ -1045,7 +1126,7 @@ router.get("/:id", async (req, res) => {
 // Update invoice
 router.put("/:id", async (req, res) => {
     const { id } = req.params;
-    const { items, charges, reductions, payment_method, payment_status, notes } = req.body;
+    const { items, charges, extras, reductions, payment_method, payment_status, notes } = req.body;
 
     if (payment_status && !VALID_PAYMENT_STATUSES.includes(payment_status)) {
         return res.status(400).json({ error: "Invalid payment status value" });
@@ -1076,6 +1157,12 @@ router.put("/:id", async (req, res) => {
             await runAsync("DELETE FROM InvoiceExtraItems WHERE invoice_id = ? AND type = 'charge'", [id]);
             const preparedCharges = prepareExtraItems(Array.isArray(charges) ? charges : [], "charge");
             await insertInvoiceExtraItems(id, preparedCharges);
+        }
+
+        if (extras !== undefined) {
+            await runAsync("DELETE FROM InvoiceExtraItems WHERE invoice_id = ? AND type = 'extra'", [id]);
+            const preparedExtras = prepareExtraItems(Array.isArray(extras) ? extras : [], "extra");
+            await insertInvoiceExtraItems(id, preparedExtras);
         }
 
         if (reductions !== undefined) {

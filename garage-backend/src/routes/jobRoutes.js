@@ -923,6 +923,7 @@ router.get("/:id/invoice", async (req, res) => {
             ...invoice,
             items,
             charges: extras.filter((entry) => entry.type === "charge"),
+            extras: extras.filter((entry) => entry.type === "extra"),
             reductions: extras.filter((entry) => entry.type === "deduction"),
         });
     } catch (error) {
