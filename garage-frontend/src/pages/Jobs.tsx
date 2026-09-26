@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -54,6 +54,7 @@ type Vehicle = {
   model: string | null;
   year: string | null;
   license_plate: string | null;
+  archived?: number;
 };
 
 type TechnicianStatus = "Active" | "On Leave" | "Inactive";
@@ -155,6 +156,24 @@ const CUSTOMERS_QUERY_KEY = ["customers"];
 const TECHNICIANS_QUERY_KEY = ["technicians"];
 const VEHICLES_QUERY_KEY = ["vehicles"];
 
+const formatVehicleOption = (vehicle: Vehicle) => {
+  const plate = vehicle.license_plate?.trim();
+  if (plate) return plate;
+  const name = [vehicle.make, vehicle.model].filter(Boolean).join(" ");
+  return name ? `No registration • ${name}` : `Vehicle #${vehicle.id}`;
+};
+
+const normalizeVehicleField = (value: string | null | undefined) => (value ?? "").trim();
+
+const vehicleFieldsMatchRecord = (
+  record: Vehicle,
+  fields: { make: string; model: string; year: string; licensePlate: string }
+) =>
+  normalizeVehicleField(record.make) === normalizeVehicleField(fields.make) &&
+  normalizeVehicleField(record.model) === normalizeVehicleField(fields.model) &&
+  normalizeVehicleField(record.year) === normalizeVehicleField(fields.year) &&
+  normalizeVehicleField(record.license_plate) === normalizeVehicleField(fields.licensePlate);
+
 const formatCurrency = (value: number | null | undefined) => {
   if (value === null || value === undefined) return "—";
   return new Intl.NumberFormat(undefined, {
@@ -177,14 +196,19 @@ const Jobs = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
   const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+  const [vehiclePickerOpen, setVehiclePickerOpen] = useState(false);
+  const [isAddingNewVehicle, setIsAddingNewVehicle] = useState(false);
   const [vehicleSelectOpen, setVehicleSelectOpen] = useState(false);
   const [jobDetailOpen, setJobDetailOpen] = useState(false);
   const [jobEditOpen, setJobEditOpen] = useState(false);
   const [jobDeleteOpen, setJobDeleteOpen] = useState(false);
 
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
+  const [vehicleDetailsLoading, setVehicleDetailsLoading] = useState(false);
   const [vehiclePromptAcknowledged, setVehiclePromptAcknowledged] = useState(false);
+  const vehicleLoadRequestRef = useRef(0);
   const [selectedJob, setSelectedJob] = useState<JobSummary | null>(null);
   const [selectedJobDetail, setSelectedJobDetail] = useState<JobDetail | null>(null);
   const [jobDetailLoading, setJobDetailLoading] = useState(false);
@@ -243,23 +267,32 @@ const Jobs = () => {
   });
 
   const {
-    data: customerVehicles,
+    data: vehiclesData,
     isFetching: vehiclesLoading,
     isError: vehiclesError,
     error: vehiclesErrorObject,
   } = useQuery<Vehicle[], Error>({
-    queryKey: [...VEHICLES_QUERY_KEY, selectedCustomer?.id ?? "none"],
-    queryFn: () => apiFetch<Vehicle[]>(`/vehicles?customer_id=${selectedCustomer?.id}`),
-    enabled: Boolean(selectedCustomer),
+    queryKey: VEHICLES_QUERY_KEY,
+    queryFn: () => apiFetch<Vehicle[]>("/vehicles"),
   });
 
   const customers = customersData ?? [];
   const technicians = (techniciansData ?? []).filter((tech) => tech.status !== "Inactive");
   const jobs = jobsData ?? [];
-  const vehiclesForCustomer = customerVehicles ?? [];
+  const customerIds = new Set(customers.map((customer) => Number(customer.id)));
+  const allVehicles = (vehiclesData ?? []).filter(
+    (vehicle) => (vehicle.archived ?? 0) === 0 && customerIds.has(Number(vehicle.customer_id))
+  );
+  const vehiclesForCustomer = selectedCustomer
+    ? allVehicles.filter((vehicle) => Number(vehicle.customer_id) === Number(selectedCustomer.id))
+    : [];
 
   const resetVehicleState = () => {
+    vehicleLoadRequestRef.current += 1;
+    setSelectedVehicleId(null);
     setSelectedVehicle(null);
+    setIsAddingNewVehicle(false);
+    setVehicleDetailsLoading(false);
     setVehicleMake("");
     setVehicleModel("");
     setVehicleYear("");
@@ -269,6 +302,7 @@ const Jobs = () => {
   const resetForm = () => {
     setSelectedCustomer(null);
     setCustomerPickerOpen(false);
+    setVehiclePickerOpen(false);
     resetVehicleState();
     setVehiclePromptAcknowledged(false);
     setDescription("");
@@ -283,6 +317,7 @@ const Jobs = () => {
 
   const applyVehicleSelection = (vehicle: Vehicle | null) => {
     setSelectedVehicle(vehicle);
+    setSelectedVehicleId(vehicle ? vehicle.id : null);
     if (vehicle) {
       setVehicleMake(vehicle.make ?? "");
       setVehicleModel(vehicle.model ?? "");
@@ -296,27 +331,95 @@ const Jobs = () => {
     }
   };
 
+  const loadVehicleById = async (vehicleId: number, customerId: number) => {
+    const requestId = ++vehicleLoadRequestRef.current;
+    setSelectedVehicleId(vehicleId);
+    setSelectedVehicle(null);
+    setVehicleMake("");
+    setVehicleModel("");
+    setVehicleYear("");
+    setVehicleLicensePlate("");
+    setVehicleDetailsLoading(true);
+
+    try {
+      const vehicle = await apiFetch<Vehicle>(`/vehicles/${vehicleId}`);
+      if (requestId !== vehicleLoadRequestRef.current) return;
+
+      if (Number(vehicle.customer_id) !== Number(customerId)) {
+        applyVehicleSelection(null);
+        toast({
+          title: "Vehicle mismatch",
+          description: "The selected vehicle does not belong to this customer.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      applyVehicleSelection(vehicle);
+    } catch (error) {
+      if (requestId !== vehicleLoadRequestRef.current) return;
+      applyVehicleSelection(null);
+      toast({
+        title: "Unable to load vehicle",
+        description: error instanceof Error ? error.message : "Could not retrieve the selected vehicle.",
+        variant: "destructive",
+      });
+    } finally {
+      if (requestId === vehicleLoadRequestRef.current) {
+        setVehicleDetailsLoading(false);
+      }
+    }
+  };
+
+  const handleVehiclePick = (vehicle: Vehicle | null) => {
+    setVehiclePickerOpen(false);
+    if (!vehicle) {
+      vehicleLoadRequestRef.current += 1;
+      setVehicleDetailsLoading(false);
+      applyVehicleSelection(null);
+      setIsAddingNewVehicle(true);
+      return;
+    }
+
+    setIsAddingNewVehicle(false);
+    const ownerFromList =
+      customers.find((customer) => Number(customer.id) === Number(vehicle.customer_id)) ?? null;
+    if (ownerFromList) {
+      setSelectedCustomer(ownerFromList);
+      void loadVehicleById(vehicle.id, vehicle.customer_id);
+      return;
+    }
+
+    void (async () => {
+      try {
+        const owner = await apiFetch<Customer>(`/customers/${vehicle.customer_id}`);
+        setSelectedCustomer(owner);
+        await loadVehicleById(vehicle.id, vehicle.customer_id);
+      } catch {
+        void loadVehicleById(vehicle.id, vehicle.customer_id);
+      }
+    })();
+  };
+
   useEffect(() => {
     if (!selectedCustomer) {
-      resetVehicleState();
+      if (!isAddingNewVehicle) {
+        resetVehicleState();
+      }
       setVehiclePromptAcknowledged(false);
       return;
     }
     setVehiclePromptAcknowledged(false);
-    applyVehicleSelection(null);
-  }, [selectedCustomer?.id]);
-
-  useEffect(() => {
-    if (
-      !createOpen ||
-      !selectedCustomer ||
-      vehiclePromptAcknowledged ||
-      !vehiclesForCustomer.length
-    ) {
+    if (isAddingNewVehicle) {
       return;
     }
-    setVehicleSelectOpen(true);
-  }, [createOpen, selectedCustomer?.id, vehiclePromptAcknowledged, vehiclesForCustomer.length]);
+    const knownVehicle =
+      selectedVehicle ?? allVehicles.find((vehicle) => vehicle.id === selectedVehicleId) ?? null;
+    if (knownVehicle && Number(knownVehicle.customer_id) === Number(selectedCustomer.id)) {
+      return;
+    }
+    applyVehicleSelection(null);
+  }, [selectedCustomer?.id]);
 
   const toggleTechnician = (id: number, checked: boolean) => {
     setAssignedTechnicians((prev) => {
@@ -444,7 +547,46 @@ const Jobs = () => {
     const resolvedCategory = jobCategory.trim();
     payload.category = resolvedCategory ? resolvedCategory : null;
 
-    if (selectedVehicle) {
+    if (selectedVehicleId) {
+      if (vehicleDetailsLoading || !selectedVehicle) {
+        toast({
+          title: "Vehicle still loading",
+          description: "Wait for the selected vehicle details to finish loading before saving.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (selectedVehicle.id !== selectedVehicleId) {
+        toast({
+          title: "Vehicle mismatch",
+          description: "The displayed vehicle does not match the selected vehicle ID.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (Number(selectedVehicle.customer_id) !== Number(selectedCustomer.id)) {
+        toast({
+          title: "Vehicle mismatch",
+          description: "The selected vehicle does not belong to this customer.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (
+        !vehicleFieldsMatchRecord(selectedVehicle, {
+          make: vehicleMake,
+          model: vehicleModel,
+          year: vehicleYear,
+          licensePlate: vehicleLicensePlate,
+        })
+      ) {
+        toast({
+          title: "Vehicle mismatch",
+          description: "Vehicle details no longer match the selected vehicle. Reselect the vehicle number.",
+          variant: "destructive",
+        });
+        return;
+      }
       payload.vehicle_id = selectedVehicle.id;
     } else {
       const trimmedMake = vehicleMake.trim();
@@ -833,6 +975,74 @@ const Jobs = () => {
             <form className="space-y-6" onSubmit={handleCreateJob}>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
+                  <Label>Registration Number</Label>
+                  <Popover open={vehiclePickerOpen} onOpenChange={setVehiclePickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        role="combobox"
+                        className="w-full justify-between"
+                        disabled={vehiclesLoading || vehiclesError}
+                      >
+                        {selectedVehicle
+                          ? formatVehicleOption(selectedVehicle)
+                          : vehicleLicensePlate || "Select registration number"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search registration numbers..." />
+                        <CommandList>
+                          <CommandEmpty>
+                            {vehiclesLoading
+                              ? "Loading vehicles..."
+                              : vehiclesError
+                              ? vehiclesErrorObject?.message ?? "Unable to load vehicles."
+                              : "No registration number found."}
+                          </CommandEmpty>
+                          {!vehiclesLoading && !vehiclesError && (
+                            <CommandGroup>
+                              {allVehicles.map((vehicle) => (
+                                <CommandItem
+                                  key={vehicle.id}
+                                  value={`${formatVehicleOption(vehicle)} ${vehicle.make ?? ""} ${vehicle.model ?? ""} ${vehicle.year ?? ""}`}
+                                  onSelect={() => handleVehiclePick(vehicle)}
+                                >
+                                  <div className="flex flex-col">
+                                    <span>{formatVehicleOption(vehicle)}</span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {[vehicle.make, vehicle.model, vehicle.year].filter(Boolean).join(" ") ||
+                                        "No vehicle details"}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                              <CommandItem value="add new vehicle" onSelect={() => handleVehiclePick(null)}>
+                                <div className="flex flex-col">
+                                  <span>Add new vehicle</span>
+                                  <span className="text-xs text-muted-foreground">Enter a new registration number</span>
+                                </div>
+                              </CommandItem>
+                            </CommandGroup>
+                          )}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                  {isAddingNewVehicle && !selectedVehicleId && (
+                    <Input
+                      id="vehiclePlateNew"
+                      placeholder="e.g. ABC-1234"
+                      value={vehicleLicensePlate}
+                      onChange={(event) => setVehicleLicensePlate(event.target.value)}
+                    />
+                  )}
+                  {vehicleDetailsLoading && (
+                    <p className="text-xs text-muted-foreground">Loading vehicle details...</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
                   <Label>Customer</Label>
                   <Popover open={customerPickerOpen} onOpenChange={setCustomerPickerOpen}>
                     <PopoverTrigger asChild>
@@ -884,19 +1094,64 @@ const Jobs = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="jobStatus">Job Status</Label>
-                  <Select value={jobStatus} onValueChange={(value) => setJobStatus(value as JobStatus)}>
-                    <SelectTrigger id="jobStatus">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {JOB_STATUS_OPTIONS.map((status) => (
-                        <SelectItem key={status} value={status}>
-                          {status}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label htmlFor="vehicleMake">Vehicle Make</Label>
+                  <Input
+                    id="vehicleMake"
+                    placeholder="e.g. Honda"
+                    value={vehicleMake}
+                    onChange={(event) => setVehicleMake(event.target.value)}
+                    readOnly={Boolean(selectedVehicleId)}
+                    className={selectedVehicleId ? "bg-muted" : undefined}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="vehicleModel">Vehicle Model</Label>
+                  <Input
+                    id="vehicleModel"
+                    placeholder="e.g. Civic"
+                    value={vehicleModel}
+                    onChange={(event) => setVehicleModel(event.target.value)}
+                    readOnly={Boolean(selectedVehicleId)}
+                    className={selectedVehicleId ? "bg-muted" : undefined}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="vehicleYear">Model Year</Label>
+                  <Input
+                    id="vehicleYear"
+                    placeholder="e.g. 2020"
+                    value={vehicleYear}
+                    onChange={(event) => setVehicleYear(event.target.value)}
+                    readOnly={Boolean(selectedVehicleId)}
+                    className={selectedVehicleId ? "bg-muted" : undefined}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="mileage">Mileage</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="mileage"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 31000"}
+                      value={mileage}
+                      onChange={(event) => setMileage(event.target.value)}
+                      className="flex-1"
+                    />
+                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "mi")}>
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="km">Kilometers</SelectItem>
+                        <SelectItem value="mi">Miles</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -942,67 +1197,19 @@ const Jobs = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="mileage">Mileage</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="mileage"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder={mileageUnit === "km" ? "e.g. 50000" : "e.g. 31000"}
-                      value={mileage}
-                      onChange={(event) => setMileage(event.target.value)}
-                      className="flex-1"
-                    />
-                    <Select value={mileageUnit} onValueChange={(value) => setMileageUnit(value as "km" | "mi")}>
-                      <SelectTrigger className="w-[120px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="km">Kilometers</SelectItem>
-                        <SelectItem value="mi">Miles</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="vehicleMake">Vehicle Make</Label>
-                  <Input
-                    id="vehicleMake"
-                    placeholder="e.g. Honda"
-                    value={vehicleMake}
-                    onChange={(event) => setVehicleMake(event.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="vehicleModel">Vehicle Model</Label>
-                  <Input
-                    id="vehicleModel"
-                    placeholder="e.g. Civic"
-                    value={vehicleModel}
-                    onChange={(event) => setVehicleModel(event.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="vehicleYear">Model Year</Label>
-                  <Input
-                    id="vehicleYear"
-                    placeholder="e.g. 2020"
-                    value={vehicleYear}
-                    onChange={(event) => setVehicleYear(event.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="vehiclePlate">Registration Number</Label>
-                  <Input
-                    id="vehiclePlate"
-                    placeholder="e.g. ABC-1234"
-                    value={vehicleLicensePlate}
-                    onChange={(event) => setVehicleLicensePlate(event.target.value)}
-                  />
+                  <Label htmlFor="jobStatus">Job Status</Label>
+                  <Select value={jobStatus} onValueChange={(value) => setJobStatus(value as JobStatus)}>
+                    <SelectTrigger id="jobStatus">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {JOB_STATUS_OPTIONS.map((status) => (
+                        <SelectItem key={status} value={status}>
+                          {status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 </div>
 
@@ -1072,7 +1279,11 @@ const Jobs = () => {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-primary" disabled={createJobMutation.isPending}>
+                <Button
+                  type="submit"
+                  className="bg-primary"
+                  disabled={createJobMutation.isPending || vehicleDetailsLoading}
+                >
                   {createJobMutation.isPending ? "Creating..." : "Create Job"}
                 </Button>
               </div>
@@ -1631,7 +1842,9 @@ const Jobs = () => {
                   variant="outline"
                   className="w-full justify-between"
                   onClick={() => {
-                    applyVehicleSelection(vehicle);
+                    if (selectedCustomer) {
+                      void loadVehicleById(vehicle.id, selectedCustomer.id);
+                    }
                     setVehiclePromptAcknowledged(true);
                     setVehicleSelectOpen(false);
                   }}

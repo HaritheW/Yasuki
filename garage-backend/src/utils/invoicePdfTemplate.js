@@ -80,6 +80,28 @@ const createContext = (doc, invoice) => {
         .map((part) => String(part ?? "").trim())
         .filter(Boolean);
 
+    const margin = 42;
+    const footerSpace = 58;
+    const pageHeight = doc.page.height;
+    const rowHBase = 20;
+    const partsRows = Math.max(1, items.length) + 3;
+    const extraRows = Math.max(1, extras.length) + 1;
+    const labourRows = Math.max(1, charges.length) + 1;
+    const estimatedHeight =
+        margin +
+        162 +
+        108 +
+        18 * 3 +
+        rowHBase * (3 + partsRows + extraRows + labourRows) +
+        12 +
+        12 +
+        14 +
+        112 +
+        48;
+    const availableHeight = pageHeight - margin - footerSpace - 10;
+    const fitScale = Math.min(1, Math.max(0.58, availableHeight / estimatedHeight));
+    const rowH = Math.max(13, Math.round(rowHBase * fitScale));
+
     return {
         doc,
         invoice,
@@ -105,13 +127,20 @@ const createContext = (doc, invoice) => {
         vehicleDetails: vehicleBits.length ? vehicleBits.join(" ") : "—",
         logoPath: path.join(__dirname, "../assets/logo.jpg"),
         brandLogosPath: path.join(__dirname, "../assets/Brand logos.png"),
-        margin: 42,
+        margin,
         pageWidth: doc.page.width,
-        pageHeight: doc.page.height,
-        contentWidth: doc.page.width - 84,
-        rowH: 20,
-        footerSpace: 58,
-        y: 42,
+        pageHeight,
+        contentWidth: doc.page.width - margin * 2,
+        fitScale,
+        rowH,
+        titleGap: Math.max(12, Math.round(18 * fitScale)),
+        afterTableGap: Math.max(6, Math.round(12 * fitScale)),
+        afterExtraGap: Math.max(7, Math.round(14 * fitScale)),
+        afterNotesGap: Math.max(10, Math.round(20 * fitScale)),
+        tableHeaderFont: Math.max(6.5, 7.5 * fitScale),
+        tableFont: Math.max(6.5, 8 * fitScale),
+        footerSpace,
+        y: margin,
     };
 };
 
@@ -125,51 +154,42 @@ const drawWatermark = (ctx) => {
     doc.opacity(1);
 };
 
-const ensureSpace = (ctx, needed) => {
-    const { doc, margin, pageHeight, footerSpace } = ctx;
-    const limit = pageHeight - margin - footerSpace - 10;
-    if (ctx.y + needed <= limit) return;
-    doc.addPage();
-    ctx.y = margin;
-};
-
 const drawSectionTitle = (ctx, title) => {
-    const { doc, margin, rowH } = ctx;
-    ensureSpace(ctx, 18 + rowH);
+    const { doc, margin, titleGap } = ctx;
     doc.rect(margin, ctx.y + 2, 3, 11).fill(NAVY);
-    doc.font("Helvetica-Bold").fontSize(10).fillColor(NAVY);
+    doc.font("Helvetica-Bold").fontSize(Math.max(8, 10 * ctx.fitScale)).fillColor(NAVY);
     doc.text(title, margin + 10, ctx.y);
-    ctx.y += 18;
+    ctx.y += titleGap;
 };
 
 const drawTableHeader = (ctx, columns) => {
-    const { doc, margin, contentWidth, rowH } = ctx;
-    ensureSpace(ctx, rowH);
+    const { doc, margin, contentWidth, rowH, tableHeaderFont } = ctx;
     doc.rect(margin, ctx.y, contentWidth, rowH).fill(HEADER_BG);
-    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#FFFFFF");
+    doc.font("Helvetica-Bold").fontSize(tableHeaderFont).fillColor("#FFFFFF");
+    const textY = ctx.y + Math.max(3, (rowH - tableHeaderFont) / 2);
     columns.forEach((col) => {
-        doc.text(col.label, col.x, ctx.y + 6, { width: col.w, align: col.align || "left" });
+        doc.text(col.label, col.x, textY, { width: col.w, align: col.align || "left" });
     });
     ctx.y += rowH;
 };
 
 const drawTableRow = (ctx, columns, { bold = false, fill = null } = {}) => {
-    const { doc, margin, contentWidth, rowH } = ctx;
-    ensureSpace(ctx, rowH);
+    const { doc, margin, contentWidth, rowH, tableFont } = ctx;
     if (fill) {
         doc.rect(margin, ctx.y, contentWidth, rowH).fill(fill);
     }
     doc.rect(margin, ctx.y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-    doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(8).fillColor(DARK);
+    doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(tableFont).fillColor(DARK);
+    const textY = ctx.y + Math.max(3, (rowH - tableFont) / 2);
     columns.forEach((col) => {
-        doc.text(String(col.text ?? ""), col.x, ctx.y + 6, { width: col.w, align: col.align || "left" });
+        doc.text(String(col.text ?? ""), col.x, textY, { width: col.w, align: col.align || "left" });
     });
     ctx.y += rowH;
 };
 
 const drawInvoiceHeader = (ctx) => {
-    const { doc, margin, contentWidth, pageWidth, logoPath, brandLogosPath, invoiceNo, invoice, status } = ctx;
-    const logoSize = 50;
+    const { doc, margin, contentWidth, pageWidth, logoPath, brandLogosPath, invoiceNo, invoice, status, fitScale } = ctx;
+    const logoSize = Math.max(36, Math.round(50 * fitScale));
 
     if (fs.existsSync(logoPath)) {
         try {
@@ -190,12 +210,13 @@ const drawInvoiceHeader = (ctx) => {
         ctx.y + 28,
         { width: brandW }
     );
-    ctx.y += logoSize + 8;
+    ctx.y += logoSize + Math.max(5, Math.round(8 * fitScale));
 
     if (fs.existsSync(brandLogosPath)) {
         try {
-            doc.image(brandLogosPath, margin, ctx.y, { width: contentWidth, height: 30 });
-            ctx.y += 38;
+            const brandH = Math.max(22, Math.round(30 * fitScale));
+            doc.image(brandLogosPath, margin, ctx.y, { width: contentWidth, height: brandH });
+            ctx.y += brandH + Math.max(6, Math.round(8 * fitScale));
         } catch (err) {
             console.error("Error loading brand logos image:", err.message);
             ctx.y += 8;
@@ -203,9 +224,9 @@ const drawInvoiceHeader = (ctx) => {
     }
 
     doc.moveTo(margin, ctx.y).lineTo(pageWidth - margin, ctx.y).strokeColor(BRAND_RED).lineWidth(2).stroke();
-    ctx.y += 14;
+    ctx.y += Math.max(8, Math.round(14 * fitScale));
 
-    doc.font("Helvetica-Bold").fontSize(20).fillColor(NAVY);
+    doc.font("Helvetica-Bold").fontSize(Math.max(16, 20 * fitScale)).fillColor(NAVY);
     doc.text("INVOICE", margin, ctx.y);
 
     const metaX = pageWidth - margin - 200;
@@ -218,7 +239,7 @@ const drawInvoiceHeader = (ctx) => {
     doc.roundedRect(badgeX, ctx.y + 26, badgeW, 16, 3).fill(status.bg);
     doc.font("Helvetica-Bold").fontSize(8).fillColor(status.fg);
     doc.text(status.label, badgeX, ctx.y + 29, { width: badgeW, align: "center" });
-    ctx.y += 52;
+    ctx.y += Math.max(36, Math.round(52 * fitScale));
 };
 
 const drawCustomerVehicleCard = (ctx) => {
@@ -245,9 +266,7 @@ const drawCustomerVehicleCard = (ctx) => {
     const leftText = billLines.join("\n");
     doc.font("Helvetica").fontSize(8);
     const leftBodyH = doc.heightOfString(leftText, { width: cardW - pad * 2 });
-    const cardH = Math.max(92, 28 + leftBodyH + 8);
-
-    ensureSpace(ctx, cardH + 12);
+    const cardH = Math.max(Math.round(92 * ctx.fitScale), 28 + leftBodyH + 8);
 
     const drawCardShell = (x, title) => {
         doc.roundedRect(x, ctx.y, cardW, cardH, 6).fill(CARD_BG);
@@ -279,7 +298,7 @@ const drawCustomerVehicleCard = (ctx) => {
         rightY += 14;
     });
 
-    ctx.y += cardH + 16;
+    ctx.y += cardH + Math.max(8, Math.round(16 * ctx.fitScale));
 };
 
 const drawLabourTable = (ctx) => {
@@ -320,7 +339,7 @@ const drawLabourTable = (ctx) => {
         ],
         { bold: true, fill: TOTAL_BG }
     );
-    ctx.y += 12;
+    ctx.y += ctx.afterTableGap;
 };
 
 const drawPartsTable = (ctx) => {
@@ -380,7 +399,7 @@ const drawPartsTable = (ctx) => {
     summaryRow("Genuine Spare Parts Total", genuineTotal);
     summaryRow("Non Genuine Spare Parts Total", nonGenuineTotal);
     summaryRow("Workshop Parts & Materials Total", partsTotal, true);
-    ctx.y += 12;
+    ctx.y += ctx.afterTableGap;
 };
 
 const drawExtraServicesTable = (ctx) => {
@@ -421,7 +440,7 @@ const drawExtraServicesTable = (ctx) => {
         ],
         { bold: true, fill: TOTAL_BG }
     );
-    ctx.y += 14;
+    ctx.y += ctx.afterExtraGap;
 };
 
 const drawNotesAndPaymentSummary = (ctx) => {
@@ -435,8 +454,7 @@ const drawNotesAndPaymentSummary = (ctx) => {
 
     doc.font("Helvetica").fontSize(8);
     const notesBodyH = doc.heightOfString(notesBody, { width: notesW - 24 });
-    const boxH = Math.max(92, 32 + notesBodyH);
-    ensureSpace(ctx, boxH + 8);
+    const boxH = Math.max(Math.round(92 * ctx.fitScale), 32 + notesBodyH);
 
     doc.roundedRect(margin, ctx.y, notesW, boxH, 6).fill(CARD_BG);
     doc.roundedRect(margin, ctx.y, notesW, boxH, 6).strokeColor(BORDER).lineWidth(0.8).stroke();
@@ -458,28 +476,35 @@ const drawNotesAndPaymentSummary = (ctx) => {
     line("Subtotal", formatCurrency(subtotal), ctx.y + 10);
     line("Discounts", formatCurrency(totalReductions), ctx.y + 26);
 
-    doc.roundedRect(boxX + 8, ctx.y + boxH - 46, boxW - 16, 36, 4).fill(NAVY);
+    const totalBarH = 26;
+    const totalBarX = boxX + 12;
+    const totalBarW = boxW - 24;
+    const totalBarY = ctx.y + boxH - totalBarH - 10;
+    doc.roundedRect(totalBarX, totalBarY, totalBarW, totalBarH, 4).fill(NAVY);
     doc.font("Helvetica-Bold").fontSize(8).fillColor("#E2E8F0");
-    doc.text("Grand Total", boxX + 18, ctx.y + boxH - 40, { width: 90 });
-    doc.font("Helvetica-Bold").fontSize(12).fillColor("#FFFFFF");
-    doc.text(formatCurrency(totalDue), boxX + 100, ctx.y + boxH - 34, { width: boxW - 126, align: "right" });
+    doc.text("Grand Total", totalBarX + 10, totalBarY + 8, { width: 78 });
+    doc.font("Helvetica-Bold").fontSize(10).fillColor("#FFFFFF");
+    doc.text(formatCurrency(totalDue), totalBarX + 86, totalBarY + 7, {
+        width: totalBarW - 98,
+        align: "right",
+    });
 
-    ctx.y += boxH + 20;
+    ctx.y += boxH + ctx.afterNotesGap;
 };
 
 const drawSignatureSection = (ctx) => {
-    const { doc, margin, contentWidth } = ctx;
-    ensureSpace(ctx, 52);
+    const { doc, margin, contentWidth, fitScale } = ctx;
     const labels = ["Prepared By", "Checked By", "Approved By", "Customer Signature"];
     const colW = contentWidth / labels.length;
 
     labels.forEach((label, index) => {
         const x = margin + index * colW;
-        doc.moveTo(x + 6, ctx.y + 22).lineTo(x + colW - 10, ctx.y + 22).strokeColor(BORDER).lineWidth(0.8).stroke();
+        const lineY = ctx.y + Math.max(16, Math.round(22 * fitScale));
+        doc.moveTo(x + 6, lineY).lineTo(x + colW - 10, lineY).strokeColor(BORDER).lineWidth(0.8).stroke();
         doc.font("Helvetica").fontSize(7).fillColor(GRAY);
-        doc.text(label, x + 6, ctx.y + 26, { width: colW - 16, align: "center" });
+        doc.text(label, x + 6, lineY + 4, { width: colW - 16, align: "center" });
     });
-    ctx.y += 48;
+    ctx.y += Math.max(32, Math.round(48 * fitScale));
 };
 
 const drawInvoiceFooter = (ctx) => {
@@ -519,7 +544,6 @@ const generateInvoicePdfBuffer = (invoice) =>
         };
 
         decoratePage();
-        doc.on("pageAdded", decoratePage);
 
         drawInvoiceHeader(ctx);
         drawCustomerVehicleCard(ctx);

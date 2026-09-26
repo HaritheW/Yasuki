@@ -237,6 +237,35 @@ const parseOptionalAmount = (value, fieldName) => {
     return parseAmount(value, fieldName);
 };
 
+const parseVehicleId = (value) => {
+    if (value === undefined || value === null || value === "") return null;
+    if (typeof value === "string" && value.trim() === "") return null;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        const validationError = new Error("vehicle_id must be a valid numeric vehicle ID");
+        validationError.status = 400;
+        throw validationError;
+    }
+    return parsed;
+};
+
+const vehicleDetailsMatchRecord = (vehicle, record) => {
+    if (!vehicle || typeof vehicle !== "object") return true;
+    const same = (left, right) => String(left ?? "").trim() === String(right ?? "").trim();
+    const checks = [
+        ["make", record.make],
+        ["model", record.model],
+        ["year", record.year],
+        ["license_plate", record.license_plate],
+    ];
+    return checks.every(([field, expected]) => {
+        if (vehicle[field] === undefined || vehicle[field] === null || vehicle[field] === "") {
+            return true;
+        }
+        return same(vehicle[field], expected);
+    });
+};
+
 const parseQuantity = (value, fieldName) => {
     if (value === undefined || value === null || value === "") return 0;
     const quantity = Number(value);
@@ -492,7 +521,29 @@ router.post("/", async (req, res) => {
     try {
         await runAsync("BEGIN TRANSACTION");
 
-        let resolvedVehicleId = vehicle_id || null;
+        let resolvedVehicleId = parseVehicleId(vehicle_id);
+        if (resolvedVehicleId) {
+            const existingVehicle = await getAsync(
+                "SELECT id, customer_id, make, model, year, license_plate FROM Vehicles WHERE id = ?",
+                [resolvedVehicleId]
+            );
+            if (!existingVehicle) {
+                const notFoundError = new Error("Selected vehicle was not found");
+                notFoundError.status = 404;
+                throw notFoundError;
+            }
+            if (Number(existingVehicle.customer_id) !== Number(customer_id)) {
+                const mismatchError = new Error("Selected vehicle does not belong to this customer");
+                mismatchError.status = 400;
+                throw mismatchError;
+            }
+            if (!vehicleDetailsMatchRecord(vehicle, existingVehicle)) {
+                const staleError = new Error("Submitted vehicle details do not match the selected vehicle");
+                staleError.status = 400;
+                throw staleError;
+            }
+            resolvedVehicleId = existingVehicle.id;
+        }
         if (!resolvedVehicleId && vehicle) {
             const { make, model, year, license_plate } = vehicle;
             if (!make || !model) {
