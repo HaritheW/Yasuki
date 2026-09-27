@@ -68,6 +68,10 @@ type CreateCustomerPayload = {
   email?: string;
   phone?: string;
   address?: string;
+  license_plate?: string;
+  make?: string;
+  model?: string;
+  year?: string;
 };
 
 const CUSTOMERS_QUERY_KEY = ["customers"];
@@ -178,6 +182,10 @@ const Dashboard = () => {
   });
 
   const customers = customersData ?? [];
+  const customersById = useMemo(
+    () => [...customers].sort((a, b) => a.id - b.id),
+    [customers]
+  );
 
   const vehiclesQueryKey = ["customerVehicles", selectedCustomer?.id ?? "none"];
   const customerVehiclesEnabled =
@@ -348,6 +356,8 @@ const Dashboard = () => {
       }),
     onSuccess: (customer) => {
       queryClient.invalidateQueries({ queryKey: CUSTOMERS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ["vehicles"] });
+      queryClient.invalidateQueries({ queryKey: ["customerVehicles"] });
       toast({
         title: "Customer Added",
         description: `${customer.name} has been added successfully.`,
@@ -539,6 +549,10 @@ const Dashboard = () => {
       email: getValue("email") || undefined,
       phone: getValue("phone") || undefined,
       address: getValue("address") || undefined,
+      license_plate: getValue("license_plate") || undefined,
+      make: getValue("make") || undefined,
+      model: getValue("model") || undefined,
+      year: getValue("year") || undefined,
     };
 
     if (!payload.name) {
@@ -631,7 +645,7 @@ const Dashboard = () => {
                 Add Customer
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Add New Customer</DialogTitle>
                 <DialogDescription>Fill in the details to add a new customer</DialogDescription>
@@ -663,6 +677,26 @@ const Dashboard = () => {
                 <div className="space-y-2">
                   <Label htmlFor="address">Address</Label>
                   <Input id="address" name="address" placeholder="123 Main St, City, State" required />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="license_plate">Vehicle Registration Number</Label>
+                  <Input
+                    id="license_plate"
+                    name="license_plate"
+                    placeholder="e.g. ABC-1234"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="make">Vehicle Make</Label>
+                  <Input id="make" name="make" placeholder="e.g. Honda" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="model">Vehicle Model</Label>
+                  <Input id="model" name="model" placeholder="e.g. Civic" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="year">Model Year</Label>
+                  <Input id="year" name="year" placeholder="e.g. 2020" />
                 </div>
                 <div className="flex justify-end gap-3">
                   <Button type="button" variant="outline" onClick={() => setAddCustomerOpen(false)}>
@@ -735,7 +769,7 @@ const Dashboard = () => {
                     )}
                     {!customersLoading &&
                       !customersError &&
-                      customers.map((customer) => (
+                      customersById.map((customer) => (
                         <tr
                           key={customer.id}
                           className="border-b hover:bg-muted/50 transition-colors cursor-pointer"

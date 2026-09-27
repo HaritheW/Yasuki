@@ -4,11 +4,20 @@ const db = require("../../database/db");
 
 // Add new customer
 router.post("/", (req, res) => {
-    const { name, phone, email, address } = req.body;
+    const { name, phone, email, address, license_plate, make, model, year } = req.body;
 
     if (!name) {
         return res.status(400).json({ error: "Customer name is required" });
     }
+
+    const trimOrNull = (value) =>
+        typeof value === "string" && value.trim() ? value.trim() : null;
+
+    const plate = trimOrNull(license_plate);
+    const vehicleMake = trimOrNull(make);
+    const vehicleModel = trimOrNull(model);
+    const vehicleYear = trimOrNull(year);
+    const hasVehicleDetails = Boolean(plate || vehicleMake || vehicleModel || vehicleYear);
 
     const query = `
         INSERT INTO Customers (name, phone, email, address)
@@ -16,7 +25,33 @@ router.post("/", (req, res) => {
     `;
     db.run(query, [name, phone, email, address], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        res.status(201).json({ id: this.lastID, name, phone, email, address });
+
+        const customer = { id: this.lastID, name, phone, email, address };
+        if (!hasVehicleDetails) {
+            return res.status(201).json(customer);
+        }
+
+        db.run(
+            `
+            INSERT INTO Vehicles (customer_id, make, model, year, license_plate)
+            VALUES (?, ?, ?, ?, ?)
+        `,
+            [customer.id, vehicleMake, vehicleModel, vehicleYear, plate],
+            function (vehicleErr) {
+                if (vehicleErr) return res.status(500).json({ error: vehicleErr.message });
+                res.status(201).json({
+                    ...customer,
+                    vehicle: {
+                        id: this.lastID,
+                        customer_id: customer.id,
+                        make: vehicleMake,
+                        model: vehicleModel,
+                        year: vehicleYear,
+                        license_plate: plate,
+                    },
+                });
+            }
+        );
     });
 });
 

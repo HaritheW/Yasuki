@@ -224,7 +224,7 @@ db.serialize(() => {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoice_id INTEGER NOT NULL,
             label TEXT NOT NULL,
-            type TEXT CHECK(type IN ('charge', 'deduction')) NOT NULL,
+            type TEXT CHECK(type IN ('charge', 'deduction', 'extra')) NOT NULL,
             amount REAL NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(invoice_id) REFERENCES Invoices(id)

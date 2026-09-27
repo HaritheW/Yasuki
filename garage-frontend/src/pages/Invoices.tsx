@@ -62,6 +62,10 @@ type InvoiceSummary = {
   customer_name: string | null;
   customer_email?: string | null;
   mileage: number | null;
+  vehicle_license_plate?: string | null;
+  vehicle_make?: string | null;
+  vehicle_model?: string | null;
+  vehicle_year?: string | null;
 };
 
 type InvoiceItem = {
@@ -78,13 +82,14 @@ type InvoiceItem = {
 type InvoiceExtra = {
   id: number;
   label: string;
-  type: "charge" | "deduction";
+  type: "charge" | "deduction" | "extra";
   amount: number;
 };
 
 type InvoiceDetail = InvoiceSummary & {
   items: InvoiceItem[];
   charges: InvoiceExtra[];
+  extras: InvoiceExtra[];
   reductions: InvoiceExtra[];
   payment_method: string | null;
 };
@@ -119,6 +124,7 @@ type UpdateInvoicePayload = {
   notes: string | null;
   items?: InvoiceItemPayload[];
   charges: Array<{ label: string; amount: number }>;
+  extras: Array<{ label: string; amount: number }>;
   reductions: Array<{ label: string; amount: number }>;
 };
 
@@ -164,6 +170,7 @@ const Invoices = () => {
   const [editNotes, setEditNotes] = useState("");
   const [editItems, setEditItems] = useState<InvoiceItemPayload[]>([]);
   const [editCharges, setEditCharges] = useState<Array<{ label: string; amount: string }>>([]);
+  const [editExtras, setEditExtras] = useState<Array<{ label: string; amount: string }>>([]);
   const [editReductions, setEditReductions] = useState<
     Array<{ label: string; amount: string; percentage?: string; appliedBase?: string }>
   >([]);
@@ -347,6 +354,7 @@ const Invoices = () => {
     if (!selectedInvoiceDetail) return;
     const currentItems = selectedInvoiceDetail.items ?? [];
     const currentCharges = selectedInvoiceDetail.charges ?? [];
+    const currentExtras = selectedInvoiceDetail.extras ?? [];
     const currentReductions = selectedInvoiceDetail.reductions ?? [];
     setEditPaymentStatus(
       (selectedInvoiceDetail.payment_status as "unpaid" | "partial" | "paid") ?? "unpaid"
@@ -364,6 +372,12 @@ const Invoices = () => {
     );
     setEditCharges(
       currentCharges.map((entry) => ({
+        label: entry.label ?? "",
+        amount: entry.amount?.toString() ?? "",
+      }))
+    );
+    setEditExtras(
+      currentExtras.map((entry) => ({
         label: entry.label ?? "",
         amount: entry.amount?.toString() ?? "",
       }))
@@ -413,6 +427,12 @@ const Invoices = () => {
       );
       setEditCharges(
         (invoice.charges ?? []).map((entry) => ({
+          label: entry.label ?? "",
+          amount: entry.amount?.toString() ?? "",
+        }))
+      );
+      setEditExtras(
+        (invoice.extras ?? []).map((entry) => ({
           label: entry.label ?? "",
           amount: entry.amount?.toString() ?? "",
         }))
@@ -501,7 +521,7 @@ const Invoices = () => {
 
     const parseEntries = (
       entries: Array<{ label: string; amount: string }>,
-      kind: "charge" | "reduction"
+      kind: "charge" | "extra" | "reduction"
     ) => {
       const parsed: Array<{ label: string; amount: number }> = [];
       for (const entry of entries) {
@@ -516,7 +536,7 @@ const Invoices = () => {
         if (!label || !Number.isFinite(amount) || amount < 0) {
     toast({
             title: "Incomplete entry",
-            description: `Each ${kind === "charge" ? "charge" : "reduction"} requires a label and non-negative amount.`,
+            description: `Each ${kind === "charge" ? "charge" : kind === "extra" ? "extra" : "reduction"} requires a label and non-negative amount.`,
             variant: "destructive",
           });
           return null;
@@ -529,6 +549,8 @@ const Invoices = () => {
 
     const parsedCharges = parseEntries(editCharges, "charge");
     if (!parsedCharges) return;
+    const parsedExtras = parseEntries(editExtras, "extra");
+    if (!parsedExtras) return;
     const parsedReductions = parseEntries(editReductions, "reduction");
     if (!parsedReductions) return;
 
@@ -564,6 +586,7 @@ const Invoices = () => {
           unit_price: entry.unit_price,
         })),
         charges: parsedCharges,
+        extras: parsedExtras,
         reductions: parsedReductions,
       },
     });
@@ -625,18 +648,18 @@ const Invoices = () => {
   };
 
   const detailCharges = selectedInvoiceDetail?.charges ?? [];
+  const detailExtras = selectedInvoiceDetail?.extras ?? [];
   const detailReductions = selectedInvoiceDetail?.reductions ?? [];
   const itemsTotal = selectedInvoiceDetail
     ? selectedInvoiceDetail.items_total ??
       selectedInvoiceDetail.items.reduce((sum, item) => sum + item.line_total, 0)
     : 0;
-  const chargesTotal =
-    selectedInvoiceDetail?.total_charges ??
-    detailCharges.reduce((sum, entry) => sum + entry.amount, 0);
+  const chargesTotal = detailCharges.reduce((sum, entry) => sum + entry.amount, 0);
+  const extrasTotal = detailExtras.reduce((sum, entry) => sum + entry.amount, 0);
   const reductionsTotal =
     selectedInvoiceDetail?.total_deductions ??
     detailReductions.reduce((sum, entry) => sum + entry.amount, 0);
-  const finalAmount = selectedInvoiceDetail?.final_total ?? itemsTotal + chargesTotal - reductionsTotal;
+  const finalAmount = selectedInvoiceDetail?.final_total ?? itemsTotal + chargesTotal + extrasTotal - reductionsTotal;
   const detailStatusMeta = selectedInvoiceDetail ? getStatusMeta(selectedInvoiceDetail.payment_status) : null;
   const estimateAmount = selectedInvoiceDetail?.initial_amount ?? null;
   const advanceReduction = detailReductions.find(
@@ -644,19 +667,19 @@ const Invoices = () => {
   );
 
   const previewCharges = previewDetail?.charges ?? [];
+  const previewExtras = previewDetail?.extras ?? [];
   const previewReductions = previewDetail?.reductions ?? [];
   const previewItemsTotal = previewDetail
     ? previewDetail.items_total ??
       previewDetail.items.reduce((sum, item) => sum + item.line_total, 0)
     : 0;
-  const previewChargesTotal =
-    previewDetail?.total_charges ??
-    previewCharges.reduce((sum, entry) => sum + entry.amount, 0);
+  const previewChargesTotal = previewCharges.reduce((sum, entry) => sum + entry.amount, 0);
+  const previewExtrasTotal = previewExtras.reduce((sum, entry) => sum + entry.amount, 0);
   const previewReductionsTotal =
     previewDetail?.total_deductions ??
     previewReductions.reduce((sum, entry) => sum + entry.amount, 0);
   const previewFinalAmount =
-    previewDetail?.final_total ?? previewItemsTotal + previewChargesTotal - previewReductionsTotal;
+    previewDetail?.final_total ?? previewItemsTotal + previewChargesTotal + previewExtrasTotal - previewReductionsTotal;
   const previewStatusMeta = previewDetail ? getStatusMeta(previewDetail.payment_status) : null;
   const previewAdvanceReduction = previewReductions.find(
     (entry) => entry.label?.toLowerCase() === "advance"
@@ -745,17 +768,17 @@ const Invoices = () => {
 
       if (!label || !Number.isFinite(amountValue) || amountValue <= 0) {
         toast({
-          title: "Incomplete charge",
+          title: "Incomplete extra",
           description: "Provide a description and a positive amount.",
           variant: "destructive",
         });
         return;
       }
 
-      setEditCharges((prev) => [...prev, { label, amount: amountValue.toString() }]);
+      setEditExtras((prev) => [...prev, { label, amount: amountValue.toString() }]);
       toast({
-        title: "Charge added",
-        description: `${label} recorded as a charge.`,
+        title: "Extra added",
+        description: `${label} recorded in Extra on the invoice.`,
       });
       resetAddChargeForm();
       setAddChargeOpen(false);
@@ -868,12 +891,17 @@ const Invoices = () => {
       return sum + (Number.isFinite(numeric) ? numeric : 0);
     }, 0);
 
-    const baseTotal = Number((itemsBase + chargesBase).toFixed(2));
+    const extrasBase = editExtras.reduce((sum, entry) => {
+      const numeric = Number(entry.amount ?? "");
+      return sum + (Number.isFinite(numeric) ? numeric : 0);
+    }, 0);
+
+    const baseTotal = Number((itemsBase + chargesBase + extrasBase).toFixed(2));
 
     if (baseTotal <= 0) {
       toast({
         title: "No billable items",
-        description: "Add line items or charges before applying a percentage discount.",
+        description: "Add line items, charges, or extras before applying a percentage discount.",
         variant: "destructive",
       });
       return;
@@ -1155,18 +1183,21 @@ const Invoices = () => {
                     {selectedInvoiceDetail.payment_method ?? "Not specified"}
                   </p>
                 </div>
-                {selectedInvoiceDetail.mileage !== null && selectedInvoiceDetail.mileage !== undefined && (
-                  <div>
-                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">Mileage</Label>
-                    <p className="font-semibold text-sm">
-                      {selectedInvoiceDetail.mileage.toLocaleString(undefined, {
-                        maximumFractionDigits: 2,
-                        minimumFractionDigits: selectedInvoiceDetail.mileage % 1 === 0 ? 0 : 2,
-                      })}{" "}
-                      km
-                    </p>
-                  </div>
-                )}
+                <div>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Number plate</Label>
+                  <p className="font-semibold text-sm">{selectedInvoiceDetail.vehicle_license_plate || "—"}</p>
+                </div>
+                <div>
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Mileage</Label>
+                  <p className="font-semibold text-sm">
+                    {selectedInvoiceDetail.mileage !== null && selectedInvoiceDetail.mileage !== undefined
+                      ? `${selectedInvoiceDetail.mileage.toLocaleString(undefined, {
+                          maximumFractionDigits: 2,
+                          minimumFractionDigits: selectedInvoiceDetail.mileage % 1 === 0 ? 0 : 2,
+                        })} km`
+                      : "—"}
+                  </p>
+                </div>
                 <div className="md:col-span-2">
                   <Label className="text-xs uppercase tracking-wide text-muted-foreground">Notes</Label>
                   <p className="rounded-md border border-muted bg-muted/30 p-3 text-sm">
@@ -1235,7 +1266,7 @@ const Invoices = () => {
                 </div>
               )}
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-3">
                 <div className="space-y-3">
                   <h3 className="text-lg font-semibold">Charges</h3>
                   <div className="overflow-x-auto rounded-md border">
@@ -1270,6 +1301,42 @@ const Invoices = () => {
                         <tr className="border-t font-semibold">
                           <td className="p-3">Total charges</td>
                           <td className="p-3 text-right">{formatCurrency(chargesTotal)}</td>
+                      </tr>
+                    </tbody>
+                    </table>
+                </div>
+              </div>
+                <div className="space-y-3">
+                  <h3 className="text-lg font-semibold">Extras</h3>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="p-3 font-medium">Category</th>
+                          <th className="p-3 font-medium text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detailExtras.length === 0 && (
+                          <tr>
+                            <td colSpan={2} className="p-3 text-sm text-muted-foreground">
+                              No extras recorded.
+                            </td>
+                          </tr>
+                        )}
+                        {detailExtras.map((extra) => (
+                          <tr key={`${extra.label}-${extra.id ?? ""}`} className="border-t">
+                          <td className="p-3">
+                              <span className="font-medium">{extra.label}</span>
+                          </td>
+                            <td className="p-3 text-right font-semibold">
+                              {formatCurrency(extra.amount)}
+                          </td>
+                        </tr>
+                      ))}
+                        <tr className="border-t font-semibold">
+                          <td className="p-3">Total extras</td>
+                          <td className="p-3 text-right">{formatCurrency(extrasTotal)}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -1320,6 +1387,10 @@ const Invoices = () => {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Charges</span>
                   <span className="font-semibold">{formatCurrency(chargesTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Extras</span>
+                  <span className="font-semibold">{formatCurrency(extrasTotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Reductions</span>
@@ -1425,7 +1496,7 @@ const Invoices = () => {
                 </div>
                 {editItems.length === 0 && (
                   <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
-                    No line items yet. Add parts from inventory; they will appear in Genuine/Non-Genuine on the PDF.
+                    No line items yet. Add parts from inventory; they will appear in Workshop Parts & Materials on the PDF.
                   </p>
                 )}
                 {editItems.length > 0 &&
@@ -1459,11 +1530,7 @@ const Invoices = () => {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      resetAddChargeForm();
-                      setAddChargeMode("manual");
-                      setAddChargeOpen(true);
-                    }}
+                    onClick={() => setEditCharges((prev) => [...prev, { label: "", amount: "" }])}
                   >
                     Add charge
                   </Button>
@@ -1504,6 +1571,66 @@ const Invoices = () => {
                       className="justify-self-end text-muted-foreground"
                       onClick={() =>
                         setEditCharges((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
+                      }
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+                </div>
+
+                <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-base font-semibold">Extras</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      resetAddChargeForm();
+                      setAddChargeMode("manual");
+                      setAddChargeOpen(true);
+                    }}
+                  >
+                    Add extra
+                  </Button>
+                  </div>
+                {editExtras.length === 0 && (
+                  <p className="rounded-md border border-dashed border-muted p-3 text-sm text-muted-foreground">
+                    No extras yet. Use “Add extra” for manual amounts (shown in Extra on the PDF).
+                  </p>
+                )}
+                {editExtras.map((entry, index) => (
+                  <div
+                    key={`extra-${index}`}
+                    className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]"
+                  >
+                    <Input
+                      placeholder="Extra description"
+                      value={entry.label}
+                      onChange={(event) => {
+                        const next = [...editExtras];
+                        next[index] = { ...next[index], label: event.target.value };
+                        setEditExtras(next);
+                      }}
+                    />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={entry.amount}
+                      onChange={(event) => {
+                        const next = [...editExtras];
+                        next[index] = { ...next[index], amount: event.target.value };
+                        setEditExtras(next);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="justify-self-end text-muted-foreground"
+                      onClick={() =>
+                        setEditExtras((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
                       }
                     >
                       Remove
@@ -1668,9 +1795,36 @@ const Invoices = () => {
                   </p>
                 </div>
                 <div className="space-y-3">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Payment summary</p>
-                    <div className="space-y-1 text-sm">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Vehicle</p>
+                  <div className="space-y-1 text-sm">
                     <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Number plate</span>
+                      <span className="font-medium text-foreground">
+                        {previewDetail.vehicle_license_plate || "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Mileage</span>
+                      <span className="font-medium text-foreground">
+                        {previewDetail.mileage !== null && previewDetail.mileage !== undefined
+                          ? `${previewDetail.mileage.toLocaleString(undefined, {
+                              maximumFractionDigits: 2,
+                              minimumFractionDigits: previewDetail.mileage % 1 === 0 ? 0 : 2,
+                            })} km`
+                          : "—"}
+                      </span>
+                    </div>
+                    {(previewDetail.vehicle_make || previewDetail.vehicle_model || previewDetail.vehicle_year) && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Vehicle</span>
+                        <span className="font-medium text-foreground">
+                          {[previewDetail.vehicle_make, previewDetail.vehicle_model, previewDetail.vehicle_year]
+                            .filter(Boolean)
+                            .join(" ")}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between pt-2">
                       <span className="text-muted-foreground">Payment method</span>
                       <span className="font-medium text-foreground">
                         {previewDetail.payment_method ?? "Not specified"}
@@ -1682,18 +1836,6 @@ const Invoices = () => {
                         {previewStatusMeta ? previewStatusMeta.label : "Unpaid"}
                       </span>
                     </div>
-                    {previewDetail.mileage !== null && previewDetail.mileage !== undefined && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Mileage</span>
-                        <span className="font-medium text-foreground">
-                          {previewDetail.mileage.toLocaleString(undefined, {
-                            maximumFractionDigits: 2,
-                            minimumFractionDigits: previewDetail.mileage % 1 === 0 ? 0 : 2,
-                          })}{" "}
-                          km
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
@@ -1731,12 +1873,12 @@ const Invoices = () => {
                 </div>
               )}
 
-              {(previewCharges.length > 0 || previewReductions.length > 0) && (
-                <div className="grid gap-6 border-b p-6 md:grid-cols-2">
+              {(previewCharges.length > 0 || previewExtras.length > 0 || previewReductions.length > 0) && (
+                <div className="grid gap-6 border-b p-6 md:grid-cols-3">
                   <div className="space-y-3">
-                    <h3 className="text-base font-semibold text-foreground">Additional charges</h3>
+                    <h3 className="text-base font-semibold text-foreground">Workshop charges</h3>
                     <p className="text-sm text-muted-foreground">
-                      Any supplemental labour, diagnostics, or consumables added to the invoice.
+                      Labour and workshop charges added to the invoice.
                     </p>
                     <div className="overflow-x-auto rounded-md border">
                       <table className="w-full text-sm">
@@ -1765,6 +1907,43 @@ const Invoices = () => {
                           <tr className="border-t font-semibold">
                             <td className="p-3 text-foreground">Total charges</td>
                             <td className="p-3 text-right text-foreground">{formatCurrency(previewChargesTotal)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <h3 className="text-base font-semibold text-foreground">Extras</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Manual entries such as outside parts, towing, or other extra amounts.
+                    </p>
+                    <div className="overflow-x-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                          <tr>
+                            <th className="p-3 font-medium">Description</th>
+                            <th className="p-3 font-medium text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewExtras.length === 0 && (
+                            <tr>
+                              <td colSpan={2} className="p-3 text-sm text-muted-foreground">
+                                No extras applied.
+                              </td>
+                            </tr>
+                          )}
+                          {previewExtras.map((extra) => (
+                            <tr key={`${extra.label}-${extra.id ?? ""}`} className="border-t">
+                              <td className="p-3 font-medium text-foreground">{extra.label}</td>
+                              <td className="p-3 text-right font-semibold text-foreground">
+                                {formatCurrency(extra.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="border-t font-semibold">
+                            <td className="p-3 text-foreground">Total extras</td>
+                            <td className="p-3 text-right text-foreground">{formatCurrency(previewExtrasTotal)}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -1940,9 +2119,9 @@ const Invoices = () => {
       >
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Add charge or item</DialogTitle>
+            <DialogTitle>Add extra or item</DialogTitle>
             <DialogDescription>
-              Record a manual service charge or pull an item from inventory to include on the invoice.
+              Record a manual extra amount or pull an item from inventory to include on the invoice.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleAddChargeSubmit} className="space-y-6">
@@ -1972,7 +2151,7 @@ const Invoices = () => {
                   <Label htmlFor="manualLabel">Description</Label>
                   <Input
                     id="manualLabel"
-                    placeholder="e.g., Labour, Diagnostic fee"
+                    placeholder="e.g., Towing, Outside parts, Diagnostic fee"
                     value={addChargeLabel}
                     onChange={(event) => setAddChargeLabel(event.target.value)}
                   />
@@ -2068,7 +2247,7 @@ const Invoices = () => {
                   Cancel
                 </Button>
               <Button type="submit">
-                {addChargeMode === "manual" ? "Add charge" : "Add inventory item"}
+                {addChargeMode === "manual" ? "Add extra" : "Add inventory item"}
                 </Button>
               </div>
             </form>

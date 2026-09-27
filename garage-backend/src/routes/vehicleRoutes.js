@@ -31,22 +31,26 @@ router.post("/", (req, res) => {
 router.get("/", (req, res) => {
     const { customer_id, include_archived } = req.query;
 
-    const baseQuery = "SELECT * FROM Vehicles";
+    const baseQuery = `
+        SELECT Vehicles.*
+        FROM Vehicles
+        INNER JOIN Customers ON Customers.id = Vehicles.customer_id
+    `;
     const filters = [];
     const params = [];
 
     if (customer_id) {
-        filters.push("customer_id = ?");
+        filters.push("Vehicles.customer_id = ?");
         params.push(customer_id);
     }
 
     if (!include_archived || include_archived === "0" || include_archived === "false") {
-        filters.push("archived = 0");
+        filters.push("Vehicles.archived = 0");
     }
 
     const whereClause = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
 
-    db.all(`${baseQuery}${whereClause} ORDER BY id DESC`, params, (err, rows) => {
+    db.all(`${baseQuery}${whereClause} ORDER BY Vehicles.id DESC`, params, (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });

@@ -1,11 +1,9 @@
 const express = require("express");
-const PDFDocument = require("pdfkit");
 const nodemailer = require("nodemailer");
-const fs = require("fs");
-const path = require("path");
 const router = express.Router();
 const db = require("../../database/db");
 const { createNotification, notifyLowStockIfNeeded } = require("../utils/notifications");
+const { generateInvoicePdfBuffer } = require("../utils/invoicePdfTemplate");
 
 const VALID_PAYMENT_STATUSES = ["unpaid", "partial", "paid"];
 const VALID_INVOICE_ITEM_TYPES = ["consumable", "non-consumable", "bulk"];
@@ -355,9 +353,11 @@ const insertInvoiceExtraItems = async (invoiceId, entries = []) => {
     }
 };
 
-const calculateTotals = (items = [], charges = [], reductions = []) => {
+const calculateTotals = (items = [], charges = [], reductions = [], extras = []) => {
     const itemsTotal = roundCurrency(items.reduce((sum, item) => sum + (item.line_total || 0), 0));
-    const totalCharges = roundCurrency(charges.reduce((sum, entry) => sum + (entry.amount || 0), 0));
+    const totalLabour = roundCurrency(charges.reduce((sum, entry) => sum + (entry.amount || 0), 0));
+    const totalExtras = roundCurrency(extras.reduce((sum, entry) => sum + (entry.amount || 0), 0));
+    const totalCharges = roundCurrency(totalLabour + totalExtras);
     const totalDeductions = roundCurrency(
         reductions.reduce((sum, entry) => sum + (entry.amount || 0), 0)
     );
@@ -385,6 +385,15 @@ const recalculatePersistedTotals = async (invoiceId) => {
         [invoiceId]
     );
 
+    const extrasRow = await getAsync(
+        `
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM InvoiceExtraItems
+        WHERE invoice_id = ? AND type = 'extra'
+    `,
+        [invoiceId]
+    );
+
     const deductionsRow = await getAsync(
         `
         SELECT COALESCE(SUM(amount), 0) AS total
@@ -395,7 +404,7 @@ const recalculatePersistedTotals = async (invoiceId) => {
     );
 
     const itemsTotal = roundCurrency(itemsRow.total);
-    const totalCharges = roundCurrency(chargesRow.total);
+    const totalCharges = roundCurrency(Number(chargesRow.total ?? 0) + Number(extrasRow.total ?? 0));
     const totalDeductions = roundCurrency(deductionsRow.total);
     const finalTotal = roundCurrency(itemsTotal + totalCharges - totalDeductions);
 
@@ -412,10 +421,15 @@ const loadInvoiceDetails = async (invoiceId) => {
         `
         SELECT Invoices.*, Jobs.description AS job_description, Jobs.job_status,
                Jobs.initial_amount, Jobs.advance_amount, Jobs.mileage,
+               Vehicles.license_plate AS vehicle_license_plate,
+               Vehicles.make AS vehicle_make,
+               Vehicles.model AS vehicle_model,
+               Vehicles.year AS vehicle_year,
                Customers.id AS customer_id, Customers.name AS customer_name, Customers.email AS customer_email,
                Customers.phone AS customer_phone, Customers.address AS customer_address
         FROM Invoices
         LEFT JOIN Jobs ON Jobs.id = Invoices.job_id
+        LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
         LEFT JOIN Customers ON Customers.id = Jobs.customer_id
         WHERE Invoices.id = ?
     `,
@@ -448,7 +462,7 @@ const loadInvoiceDetails = async (invoiceId) => {
         genuine_or_non_genuine: row.genuine_or_non_genuine ?? row.Genuine_or_non_genuine,
     }));
 
-    const extras = await allAsync(
+    const extraRows = await allAsync(
         `
         SELECT id, label, type, amount
         FROM InvoiceExtraItems
@@ -461,386 +475,13 @@ const loadInvoiceDetails = async (invoiceId) => {
     return {
         ...invoice,
         items,
-        charges: extras.filter((entry) => entry.type === "charge"),
-        reductions: extras.filter((entry) => entry.type === "deduction"),
+        charges: extraRows.filter((entry) => entry.type === "charge"),
+        extras: extraRows.filter((entry) => entry.type === "extra"),
+        reductions: extraRows.filter((entry) => entry.type === "deduction"),
     };
 };
 
-const generateInvoicePdfBuffer = (invoice) =>
-    new Promise((resolve, reject) => {
-        const doc = new PDFDocument({ margin: 50, size: "A4" });
-        const chunks = [];
 
-        doc.on("data", (chunk) => chunks.push(chunk));
-        doc.on("end", () => resolve(Buffer.concat(chunks)));
-        doc.on("error", reject);
-
-        // ═══════════════════════════════════════════════════════════
-        // CONFIGURATION
-        // ═══════════════════════════════════════════════════════════
-        const PRIMARY = "#B91C1C";      // Red for branding
-        const DARK = "#111827";         // Dark text
-        const GRAY = "#6B7280";         // Secondary text
-        const LIGHT = "#F9FAFB";        // Light background
-        const BORDER = "#E5E7EB";       // Borders
-        const margin = 50;
-        const pageWidth = doc.page.width;
-        const contentWidth = pageWidth - margin * 2;
-
-        // Helper functions
-        const formatCurrency = (val) => `LKR ${Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const formatAmount = (val) => Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const formatAmountStar = (val) => `${formatAmount(val)}*`;
-        const formatQuantity = (val) => Number(val ?? 0).toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
-        const formatDate = (val) => {
-            if (!val) return "N/A";
-            const d = new Date(val);
-            return isNaN(d.getTime())
-                ? val
-                : d.toLocaleDateString("en-GB", {
-                      day: "2-digit",
-                      month: "short",
-                      year: "numeric",
-                      timeZone: "Asia/Colombo",
-                  });
-        };
-
-        // Data – split for invoice format: Workshop Charges (labour), Genuine parts, Non-Genuine parts
-        const items = invoice.items ?? [];
-        const charges = invoice.charges ?? [];
-        const reductions = invoice.reductions ?? [];
-        // Normalize genuine flag (handle casing/whitespace; null/undefined = non-genuine)
-        const isGenuine = (i) => String(i.genuine_or_non_genuine || "").toLowerCase().trim() === "genuine";
-        const genuineItems = items.filter(isGenuine);
-        const nonGenuineItems = items.filter((i) => !isGenuine(i));
-        const labourTotal = charges.reduce((s, c) => s + Number(c.amount ?? 0), 0);
-        const genuineTotal = genuineItems.reduce((s, i) => s + Number(i.line_total ?? 0), 0);
-        const nonGenuineTotal = nonGenuineItems.reduce((s, i) => s + Number(i.line_total ?? 0), 0);
-        const subtotal = labourTotal + genuineTotal + nonGenuineTotal;
-        const totalReductions = reductions.reduce((s, r) => s + Number(r.amount ?? 0), 0);
-        const totalDue = invoice.final_total ?? subtotal - totalReductions;
-        const status = (invoice.payment_status ?? "unpaid").charAt(0).toUpperCase() + (invoice.payment_status ?? "unpaid").slice(1);
-        const invoiceDateYyyymmdd = invoice.invoice_date
-            ? new Date(invoice.invoice_date).toISOString().slice(0, 10).replace(/-/g, "")
-            : "";
-
-        let y = margin;
-
-        // ═══════════════════════════════════════════════════════════
-        // WATERMARK LOGO (centered, semi-transparent)
-        // ═══════════════════════════════════════════════════════════
-        const logoPath = path.join(__dirname, "../assets/logo.jpg");
-        if (fs.existsSync(logoPath)) {
-            doc.save();
-            doc.opacity(0.15);
-            const logoWidth = 400;
-            const logoHeight = 230;
-            const logoX = (pageWidth - logoWidth) / 2;
-            const logoY = (doc.page.height - logoHeight) / 2;
-            doc.image(logoPath, logoX, logoY, { width: logoWidth });
-            doc.restore();
-            doc.opacity(1);
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // HEADER - LOGO + COMPANY DETAILS
-        // ═══════════════════════════════════════════════════════════
-        const logoSize = 50;
-        const logoX = margin;
-        
-        // Draw logo on left
-        if (fs.existsSync(logoPath)) {
-            doc.image(logoPath, logoX, y, { width: logoSize, height: logoSize });
-        }
-        
-        // Company details next to logo
-        const textX = margin + logoSize + 15;
-        
-        doc.font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY);
-        doc.text("NEW YASUKI AUTO MOTORS (PVT) Ltd.", textX, y + 8);
-        
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("Piskal Waththa, Wilgoda, Kurunegala  |  071 844 6200  |  076 744 6200  |  yasukiauto@gmail.com", textX, y + 28);
-        
-        // Add brand logos image directly below company details line in header section
-        const brandLogosPath = path.join(__dirname, "../assets/Brand logos.png");
-        if (fs.existsSync(brandLogosPath)) {
-            // Company details text is at y + 28, text line height is ~10, so logos start at y + 28 + 10 + 5 spacing
-            const brandLogosY = y + 43; // Position immediately below company details text
-            const brandLogosWidth = contentWidth;
-            const brandLogosHeight = 40; // Reduced height while maintaining clarity
-            // Draw brand logos with both width and height to control exact positioning
-            doc.image(brandLogosPath, margin, brandLogosY, { 
-                width: brandLogosWidth,
-                height: brandLogosHeight
-            });
-            // Update y position to after logos
-            y = brandLogosY + brandLogosHeight + 10;
-        } else {
-            y += logoSize + 10;
-        }
-
-        // Divider
-        doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(PRIMARY).lineWidth(1.5).stroke();
-        y += 15;
-
-        // ═══════════════════════════════════════════════════════════
-        // INVOICE TITLE & INFO
-        // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(22).fillColor(DARK);
-        doc.text("INVOICE", margin, y);
-
-        // Invoice details (right)
-        const invoiceNo = invoice.invoice_no ?? `INV-${String(invoice.id).padStart(5, "0")}`;
-        doc.font("Helvetica").fontSize(9).fillColor(GRAY);
-        doc.text(`Invoice #: ${invoiceNo}`, pageWidth - margin - 180, y, { width: 180, align: "right" });
-        doc.text(`Date: ${formatDate(invoice.invoice_date)}`, pageWidth - margin - 180, y + 12, { width: 180, align: "right" });
-        doc.text(`Status: ${status}`, pageWidth - margin - 180, y + 24, { width: 180, align: "right" });
-
-        y += 40;
-
-        // ═══════════════════════════════════════════════════════════
-        // BILL TO SECTION
-        // ═══════════════════════════════════════════════════════════
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
-        doc.text("BILL TO:", margin, y);
-        y += 12;
-
-        doc.font("Helvetica").fontSize(9).fillColor(DARK);
-        doc.text(invoice.customer_name ?? "Walk-in Customer", margin, y);
-        y += 12;
-
-        doc.fillColor(GRAY).fontSize(8);
-        if (invoice.customer_phone) { doc.text(invoice.customer_phone, margin, y); y += 10; }
-        if (invoice.customer_email) { doc.text(invoice.customer_email, margin, y); y += 10; }
-        if (invoice.customer_address) { doc.text(invoice.customer_address, margin, y, { width: 250 }); y += 12; }
-
-        y += 10;
-
-        // ═══════════════════════════════════════════════════════════
-        // INVOICE DATA FORMAT: Workshop Charges, Genuine Parts, Non-Genuine Parts
-        // ═══════════════════════════════════════════════════════════
-        const rowH = 20;
-        const dashY = () => {
-            doc.moveTo(margin, y).lineTo(pageWidth - margin, y).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += 8;
-        };
-
-        // Helper to clean item name (remove quantity pattern)
-        const cleanItemName = (itemName) => {
-            if (!itemName || typeof itemName !== "string") return itemName;
-            return itemName
-                .replace(/\s*\(\d+(?:\.\d+)?\s*×\s*\)/gi, "")
-                .replace(/\s*\(\d+(?:\.\d+)?\s*x\s*\)/gi, "")
-                .trim();
-        };
-
-        // ─── 1. WORKSHOP CHARGES (Labour) ───
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
-        doc.text("WORKSHOP CHARGES", margin, y, { width: contentWidth, align: "center" });
-        y += 14;
-
-        const cColNo = 40;
-        const cColDesc = contentWidth - cColNo - 90;
-        const cColAmt = 90;
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("ITEM NO.", margin + 6, y + 6, { width: cColNo - 6 });
-        doc.text("DESCRIPTION", margin + cColNo + 6, y + 6, { width: cColDesc - 6 });
-        doc.text("AMOUNT", margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
-        y += rowH;
-        dashY();
-
-        let chargeNo = 1;
-        charges.forEach((c, i) => {
-            if (i > 0) doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(chargeNo++), margin + 6, y + 6, { width: cColNo - 6 });
-            doc.text(cleanItemName(c.label ?? "Charge"), margin + cColNo + 6, y + 6, { width: cColDesc - 12 });
-            doc.text(formatAmountStar(c.amount ?? 0), margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
-            y += rowH;
-        });
-        if (charges.length === 0) {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += rowH;
-        }
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("Labour Total:", margin + cColNo + cColDesc - 80, y + 6, { width: 80, align: "right" });
-        doc.text(formatAmountStar(labourTotal), margin + cColNo + cColDesc, y + 6, { width: cColAmt - 6, align: "right" });
-        y += rowH + 10;
-        dashY();
-
-        // ─── 2. WORKSHOP PARTS & MATERIALS (Genuine) ───
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
-        doc.text("WORKSHOP PARTS & MATERIALS", margin, y, { width: contentWidth, align: "center" });
-        y += 14;
-
-        const pColNo = 35;
-        const pColDesc = 260;
-        const pColQty = 55;
-        const pColTotal = contentWidth - pColNo - pColDesc - pColQty;
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("IT.NO.", margin + 6, y + 6, { width: pColNo - 6 });
-        doc.text("DESCRIPTION", margin + pColNo + 6, y + 6, { width: pColDesc - 6 });
-        doc.text("QUANTITY", margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-        doc.text("TOTAL", margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH;
-        dashY();
-
-        let genNo = 1;
-        genuineItems.forEach((item, i) => {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            const qty = Number(item.quantity);
-            const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
-            const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
-            const lineTotal = Number(item.line_total);
-            const lineTotalVal = isNaN(lineTotal) ? 0 : lineTotal;
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(genNo++), margin + 6, y + 6, { width: pColNo - 6 });
-            doc.text(cleanItemName(desc), margin + pColNo + 6, y + 6, { width: pColDesc - 12 });
-            doc.text(formatQuantity(qtyVal), margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-            doc.text(formatAmountStar(lineTotalVal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-            y += rowH;
-        });
-        if (genuineItems.length === 0) {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += rowH;
-        }
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("Genuine Spare Parts Total:", margin + pColNo + pColDesc - 20, y + 6, { width: 140, align: "right" });
-        doc.text(formatAmountStar(genuineTotal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH + 10;
-        dashY();
-
-        // ─── 3. WORKSHOP PARTS & MATERIALS (Non-Genuine) ───
-        doc.font("Helvetica-Bold").fontSize(10).fillColor(DARK);
-        doc.text("WORKSHOP PARTS & MATERIALS", margin, y, { width: contentWidth, align: "center" });
-        y += 14;
-
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("IT.NO.", margin + 6, y + 6, { width: pColNo - 6 });
-        doc.text("DESCRIPTION", margin + pColNo + 6, y + 6, { width: pColDesc - 6 });
-        doc.text("QUANTITY", margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-        doc.text("TOTAL", margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH;
-        dashY();
-
-        let nonGenNo = 1;
-        nonGenuineItems.forEach((item, i) => {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            const qty = Number(item.quantity);
-            const qtyVal = !isNaN(qty) && qty > 0 ? qty : 1;
-            const desc = (item.item_name != null ? item.item_name : item.Item_name) ?? "Item";
-            const lineTotal = Number(item.line_total);
-            const lineTotalVal = isNaN(lineTotal) ? 0 : lineTotal;
-            doc.font("Helvetica").fontSize(8).fillColor(DARK);
-            doc.text(String(nonGenNo++), margin + 6, y + 6, { width: pColNo - 6 });
-            doc.text(cleanItemName(desc), margin + pColNo + 6, y + 6, { width: pColDesc - 12 });
-            doc.text(formatQuantity(qtyVal), margin + pColNo + pColDesc, y + 6, { width: pColQty, align: "right" });
-            doc.text(formatAmountStar(lineTotalVal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-            y += rowH;
-        });
-        if (nonGenuineItems.length === 0) {
-            doc.rect(margin, y, contentWidth, rowH).strokeColor(BORDER).lineWidth(0.5).stroke();
-            y += rowH;
-        }
-        doc.font("Helvetica-Bold").fontSize(8).fillColor(DARK);
-        doc.text("None Genuine Spare Parts Total:", margin + pColNo + pColDesc - 20, y + 6, { width: 160, align: "right" });
-        doc.text(formatAmountStar(nonGenuineTotal), margin + pColNo + pColDesc + pColQty, y + 6, { width: pColTotal - 6, align: "right" });
-        y += rowH + 10;
-        dashY();
-
-        // ─── Date and Grand Total ───
-        doc.font("Helvetica").fontSize(9).fillColor(DARK);
-        doc.text(invoiceDateYyyymmdd, margin, y + 4);
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
-        doc.text("Grand Total:", pageWidth - margin - 130, y + 4, { width: 80, align: "right" });
-        doc.text(formatAmountStar(totalDue), pageWidth - margin - 48, y + 4, { width: 48, align: "right" });
-        y += 24;
-
-        // Reductions (if any) – show below Grand Total
-        if (reductions.length > 0) {
-            reductions.forEach((r) => {
-                doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-                doc.text(`- ${r.label ?? "Discount"}: -${formatCurrency(r.amount ?? 0)}`, pageWidth - margin - 200, y + 2, { width: 200, align: "right" });
-                y += 12;
-            });
-            y += 6;
-        }
-
-        // ─── Signature lines ───
-        y += 16;
-        const sigLabels = ["Prepared By", "Checked By", "Approved By", "Customer Signature"];
-        const sigW = contentWidth / 4;
-        sigLabels.forEach((label, idx) => {
-            doc.moveTo(margin + idx * sigW + 8, y).lineTo(margin + (idx + 1) * sigW - 8, y).strokeColor(BORDER).lineWidth(0.5).stroke();
-            doc.font("Helvetica").fontSize(7).fillColor(GRAY);
-            doc.text(label, margin + idx * sigW + 8, y + 6, { width: sigW - 16, align: "center" });
-        });
-        y += 28;
-
-        // ═══════════════════════════════════════════════════════════
-        // NOTES
-        // ═══════════════════════════════════════════════════════════
-        if (invoice.notes) {
-            doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK);
-            doc.text("Notes:", margin, y);
-            doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-            doc.text(invoice.notes, margin, y + 12, { width: contentWidth });
-            y += 30;
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // FOOTER
-        // ═══════════════════════════════════════════════════════════
-        // Ensure we have enough space for footer, add new page if needed
-        const footerSpace = 60;
-        const footerY = doc.page.height - margin - footerSpace;
-        
-        if (y > footerY - 20) {
-            doc.addPage();
-            // Add watermark to new page
-            if (fs.existsSync(logoPath)) {
-                doc.save();
-                doc.opacity(0.15);
-                const logoWidth = 400;
-                const logoHeight = 230;
-                const logoX = (pageWidth - logoWidth) / 2;
-                const logoY = (doc.page.height - logoHeight) / 2;
-                doc.image(logoPath, logoX, logoY, { width: logoWidth });
-                doc.restore();
-                doc.opacity(1);
-            }
-            y = margin + 40;
-        }
-        
-        // Position footer near bottom of current page
-        const finalFooterY = doc.page.height - margin - footerSpace;
-        
-        // Draw thick dark gray horizontal line
-        doc.save();
-        doc.strokeColor("#374151"); // Dark gray color
-        doc.lineWidth(3);
-        doc.moveTo(margin, finalFooterY)
-            .lineTo(pageWidth - margin, finalFooterY)
-            .stroke();
-        doc.restore();
-        
-        // Add thank you message below the line (centered, dark red)
-        doc.font("Helvetica").fontSize(10).fillColor(PRIMARY);
-        const thankYouText = "Thank you for choosing New Yasuki Auto Motors!";
-        doc.text(thankYouText, margin, finalFooterY + 10, { 
-            width: contentWidth,
-            align: "center" 
-        });
-
-        // Footer lines (business info)
-        doc.font("Helvetica").fontSize(8).fillColor(GRAY);
-        doc.text("We have the best-equipped automobile accident repair center in Kurunegala Srilanka", margin, finalFooterY + 24, { width: contentWidth, align: "center" });
-        doc.text("Authorized dealer for TOYOTA/NISSAN/SUZUKI/KIA/MICRO/MAHINDRA/CHERRY", margin, finalFooterY + 36, { width: contentWidth, align: "center" });
-        doc.text("E-mail : yasukiauto@gmail.com", margin, finalFooterY + 48, { width: contentWidth, align: "center" });
-
-        doc.end();
-    });
 
 // Create invoice
 router.post("/", async (req, res) => {
@@ -848,6 +489,7 @@ router.post("/", async (req, res) => {
         job_id,
         items = [],
         charges,
+        extras,
         reductions,
         payment_method,
         payment_status = "unpaid",
@@ -901,9 +543,10 @@ router.post("/", async (req, res) => {
         }
 
         const preparedCharges = prepareExtraItems(rawCharges, "charge");
+        const preparedExtras = prepareExtraItems(Array.isArray(extras) ? extras : [], "extra");
         const preparedReductions = prepareExtraItems(rawReductions, "deduction");
 
-        const totals = calculateTotals(preparedItems, preparedCharges, preparedReductions);
+        const totals = calculateTotals(preparedItems, preparedCharges, preparedReductions, preparedExtras);
         const invoiceNo = await generateInvoiceNumber();
 
         const invoiceResult = await runAsync(
@@ -936,7 +579,7 @@ router.post("/", async (req, res) => {
         const invoiceId = invoiceResult.lastID;
 
         await insertInvoiceItems(invoiceId, preparedItems, { invoiceNo });
-        await insertInvoiceExtraItems(invoiceId, [...preparedCharges, ...preparedReductions]);
+        await insertInvoiceExtraItems(invoiceId, [...preparedCharges, ...preparedExtras, ...preparedReductions]);
 
         await runAsync("COMMIT");
 
@@ -986,9 +629,15 @@ router.get("/", async (req, res) => {
     try {
         const invoices = await allAsync(
             `
-            SELECT Invoices.*, Customers.name AS customer_name
+            SELECT Invoices.*, Customers.name AS customer_name,
+                   Jobs.mileage,
+                   Vehicles.license_plate AS vehicle_license_plate,
+                   Vehicles.make AS vehicle_make,
+                   Vehicles.model AS vehicle_model,
+                   Vehicles.year AS vehicle_year
             FROM Invoices
             LEFT JOIN Jobs ON Jobs.id = Invoices.job_id
+            LEFT JOIN Vehicles ON Vehicles.id = Jobs.vehicle_id
             LEFT JOIN Customers ON Customers.id = Jobs.customer_id
             ${whereClause}
             ORDER BY invoice_date DESC
@@ -1019,7 +668,7 @@ router.get("/:id", async (req, res) => {
 // Update invoice
 router.put("/:id", async (req, res) => {
     const { id } = req.params;
-    const { items, charges, reductions, payment_method, payment_status, notes } = req.body;
+    const { items, charges, extras, reductions, payment_method, payment_status, notes } = req.body;
 
     if (payment_status && !VALID_PAYMENT_STATUSES.includes(payment_status)) {
         return res.status(400).json({ error: "Invalid payment status value" });
@@ -1050,6 +699,12 @@ router.put("/:id", async (req, res) => {
             await runAsync("DELETE FROM InvoiceExtraItems WHERE invoice_id = ? AND type = 'charge'", [id]);
             const preparedCharges = prepareExtraItems(Array.isArray(charges) ? charges : [], "charge");
             await insertInvoiceExtraItems(id, preparedCharges);
+        }
+
+        if (extras !== undefined) {
+            await runAsync("DELETE FROM InvoiceExtraItems WHERE invoice_id = ? AND type = 'extra'", [id]);
+            const preparedExtras = prepareExtraItems(Array.isArray(extras) ? extras : [], "extra");
+            await insertInvoiceExtraItems(id, preparedExtras);
         }
 
         if (reductions !== undefined) {
