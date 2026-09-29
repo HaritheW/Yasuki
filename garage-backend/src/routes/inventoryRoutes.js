@@ -1,6 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
+const {
+    assertSufficientStock,
+    isStockDeductedType,
+} = require("../utils/inventoryStock");
 
 const VALID_TYPES = ["consumable", "non-consumable", "bulk"];
 const VALID_GENUINE = ["genuine", "non-genuine"];
@@ -25,9 +29,29 @@ const parseNullableNumber = (value, fieldName) => {
     return toNumber(value, fieldName);
 };
 
+const parseNullableNonNegative = (value, fieldName) => {
+    const parsed = parseNullableNumber(value, fieldName);
+    if (parsed !== null && parsed < 0) {
+        const error = new Error(`${fieldName} must not be negative`);
+        error.status = 400;
+        throw error;
+    }
+    return parsed;
+};
+
 // Create inventory item
 router.post("/", (req, res) => {
-    const { name, description, type, unit, quantity = 0, unit_cost, reorder_level = 0, genuine_or_non_genuine } = req.body;
+    const {
+        name,
+        description,
+        type,
+        unit,
+        quantity = 0,
+        unit_cost,
+        selling_price,
+        reorder_level = 0,
+        genuine_or_non_genuine,
+    } = req.body;
 
     if (!name || !type || !VALID_TYPES.includes(type)) {
         return res.status(400).json({ error: "name and valid type are required" });
@@ -40,10 +64,12 @@ router.post("/", (req, res) => {
 
     let quantityValue;
     let unitCostValue;
+    let sellingPriceValue;
     let reorderLevelValue;
     try {
         quantityValue = parseNumber(quantity, "quantity");
         unitCostValue = parseNullableNumber(unit_cost, "unit_cost");
+        sellingPriceValue = parseNullableNonNegative(selling_price, "selling_price");
         reorderLevelValue = parseNumber(reorder_level, "reorder_level");
     } catch (error) {
         const status = Number.isInteger(error.status) ? error.status : 500;
@@ -51,12 +77,22 @@ router.post("/", (req, res) => {
     }
 
     const query = `
-        INSERT INTO InventoryItems (name, description, type, unit, quantity, unit_cost, reorder_level, genuine_or_non_genuine)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO InventoryItems (name, description, type, unit, quantity, unit_cost, selling_price, reorder_level, genuine_or_non_genuine)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     db.run(
         query,
-        [name, description, type, unit, quantityValue, unitCostValue, reorderLevelValue, genuineValue],
+        [
+            name,
+            description,
+            type,
+            unit,
+            quantityValue,
+            unitCostValue,
+            sellingPriceValue,
+            reorderLevelValue,
+            genuineValue,
+        ],
         function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.status(201).json({
@@ -67,6 +103,7 @@ router.post("/", (req, res) => {
                 unit,
             quantity: quantityValue,
                 unit_cost: unitCostValue,
+                selling_price: sellingPriceValue,
             reorder_level: reorderLevelValue,
             genuine_or_non_genuine: genuineValue,
         });
@@ -115,7 +152,17 @@ router.get("/:id", (req, res) => {
 // Update inventory item
 router.put("/:id", (req, res) => {
     const { id } = req.params;
-    const { name, description, type, unit, quantity, unit_cost, reorder_level, genuine_or_non_genuine } = req.body;
+    const {
+        name,
+        description,
+        type,
+        unit,
+        quantity,
+        unit_cost,
+        selling_price,
+        reorder_level,
+        genuine_or_non_genuine,
+    } = req.body;
 
     if (type && !VALID_TYPES.includes(type)) {
         return res.status(400).json({ error: "Invalid inventory type" });
@@ -131,13 +178,20 @@ router.put("/:id", (req, res) => {
     let quantityValue = null;
     let unitCostValue = null;
     let unitCostProvided = false;
+    let sellingPriceValue = null;
+    let sellingPriceProvided = false;
     let reorderLevelValue = null;
+    const unitProvided = unit !== undefined;
 
     try {
         if (quantity !== undefined) quantityValue = parseNumber(quantity, "quantity");
         if (unit_cost !== undefined) {
             unitCostProvided = true;
             unitCostValue = parseNullableNumber(unit_cost, "unit_cost");
+        }
+        if (selling_price !== undefined) {
+            sellingPriceProvided = true;
+            sellingPriceValue = parseNullableNonNegative(selling_price, "selling_price");
         }
         if (reorder_level !== undefined) reorderLevelValue = parseNumber(reorder_level, "reorder_level");
     } catch (error) {
@@ -151,10 +205,11 @@ router.put("/:id", (req, res) => {
         SET name = COALESCE(?, name),
             description = COALESCE(?, description),
             type = COALESCE(?, type),
-            unit = COALESCE(?, unit),
+            unit = CASE WHEN ? = 1 THEN ? ELSE unit END,
             quantity = COALESCE(?, quantity),
             reorder_level = COALESCE(?, reorder_level),
             unit_cost = CASE WHEN ? = 1 THEN ? ELSE unit_cost END,
+            selling_price = CASE WHEN ? = 1 THEN ? ELSE selling_price END,
             genuine_or_non_genuine = CASE WHEN ? = 1 THEN ? ELSE genuine_or_non_genuine END,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
@@ -163,11 +218,14 @@ router.put("/:id", (req, res) => {
             name,
             description,
             type,
-            unit,
+            unitProvided ? 1 : 0,
+            unitProvided ? unit : null,
             quantityValue,
             reorderLevelValue,
             unitCostProvided ? 1 : 0,
             unitCostValue,
+            sellingPriceProvided ? 1 : 0,
+            sellingPriceValue,
             genuineValue !== undefined ? 1 : 0,
             genuineValue !== undefined ? genuineValue : null,
             id,
@@ -223,11 +281,15 @@ router.post("/:id/deduct", (req, res) => {
     db.get("SELECT * FROM InventoryItems WHERE id = ?", [id], (err, item) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!item) return res.status(404).json({ error: "Inventory item not found" });
-        if (item.type !== "consumable") {
-            return res.status(400).json({ error: "Only consumable items can be auto deducted" });
+        if (!isStockDeductedType(item.type)) {
+            return res.status(400).json({ error: "Only consumable or bulk items can be auto deducted" });
         }
-        if (item.quantity < quantityValue) {
-            return res.status(400).json({ error: "Insufficient inventory quantity" });
+        try {
+            // Compare against InventoryItems.quantity for any unit; unit is display-only.
+            assertSufficientStock(item, quantityValue);
+        } catch (stockError) {
+            const status = Number.isInteger(stockError.status) ? stockError.status : 400;
+            return res.status(status).json({ error: stockError.message });
         }
 
         const updateQuery = `

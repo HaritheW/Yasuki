@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require("../../database/db");
 const { createNotification, notifyLowStockIfNeeded } = require("../utils/notifications");
 const { generateInvoicePdfBuffer } = require("../utils/invoicePdfTemplate");
+const { assertSufficientStock, isStockDeductedType, assertInvoiceSelectableInventoryItem } = require("../utils/inventoryStock");
 
 const VALID_PAYMENT_STATUSES = ["unpaid", "partial", "paid"];
 const VALID_INVOICE_ITEM_TYPES = ["consumable", "non-consumable", "bulk"];
@@ -111,7 +112,7 @@ const prepareInvoiceItems = async (items = []) => {
             if (!inventoryCache.has(inventory_item_id)) {
                 const inventoryItem = await getAsync(
                     `
-                    SELECT id, name, type, quantity
+                    SELECT id, name, type, unit, quantity
                     FROM InventoryItems
                     WHERE id = ?
                 `,
@@ -123,6 +124,7 @@ const prepareInvoiceItems = async (items = []) => {
                     notFoundError.status = 404;
                     throw notFoundError;
                 }
+                assertInvoiceSelectableInventoryItem(inventoryItem);
                 inventoryCache.set(inventory_item_id, inventoryItem);
             }
 
@@ -132,13 +134,10 @@ const prepareInvoiceItems = async (items = []) => {
             resolvedType = inventoryItem.type;
             inventoryType = inventoryItem.type;
 
-            if (inventoryItem.type === "consumable") {
+            if (isStockDeductedType(inventoryItem.type)) {
                 const plannedUsage = (consumableUsage.get(inventory_item_id) || 0) + quantityValue;
-                if (plannedUsage > inventoryItem.quantity) {
-                    const stockError = new Error(`Insufficient stock for ${inventoryItem.name}`);
-                    stockError.status = 400;
-                    throw stockError;
-                }
+                // Quantity vs stock only — unit label never affects this check.
+                assertSufficientStock(inventoryItem, plannedUsage);
                 consumableUsage.set(inventory_item_id, plannedUsage);
             }
         } else {
@@ -217,7 +216,7 @@ const insertInvoiceItems = async (invoiceId, items = [], options = {}) => {
             line_total: item.line_total,
         });
 
-        if (item.inventory_item_id && item.inventoryType === "consumable") {
+        if (item.inventory_item_id && isStockDeductedType(item.inventoryType)) {
             await runAsync(
                 `
                 UPDATE InventoryItems
@@ -271,7 +270,7 @@ const restockInvoiceItems = async (invoiceId, options = {}) => {
         LEFT JOIN InventoryItems ON InventoryItems.id = InvoiceItems.inventory_item_id
         WHERE InvoiceItems.invoice_id = ?
           AND InvoiceItems.inventory_item_id IS NOT NULL
-          AND InvoiceItems.type = 'consumable'
+          AND InvoiceItems.type IN ('consumable', 'bulk')
     `,
         [invoiceId]
     );
@@ -774,6 +773,15 @@ router.delete("/:id", async (req, res) => {
         const existing = await loadInvoiceDetails(id);
         if (!existing) {
             return res.status(404).json({ error: "Invoice not found" });
+        }
+
+        const paymentStatus = String(existing.payment_status || "")
+            .trim()
+            .toLowerCase();
+        if (paymentStatus !== "paid") {
+            return res.status(400).json({
+                error: "Only paid invoices can be deleted.",
+            });
         }
 
         await runAsync("BEGIN TRANSACTION");

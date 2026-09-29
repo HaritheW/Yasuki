@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Search, FileText, Mail, Download, Edit } from "lucide-react";
+import { Search, FileText, Mail, Download, Edit, Trash2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -98,6 +98,7 @@ type InventoryOption = {
   id: number;
   name: string;
   type: "consumable" | "non-consumable" | "bulk";
+  unit: string | null;
   quantity: number;
   unit_cost: number | null;
 };
@@ -154,7 +155,7 @@ const Invoices = () => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<number | null>(null);
+  const [invoiceToDelete, setInvoiceToDelete] = useState<{ id: number; label: string } | null>(null);
   const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
@@ -218,6 +219,14 @@ const Invoices = () => {
     queryKey: ["inventory", "options"],
     queryFn: () => apiFetch<InventoryOption[]>("/inventory"),
   });
+
+  const invoiceSelectableInventory = useMemo(
+    () =>
+      (inventoryQuery.data ?? []).filter(
+        (item) => item.type === "consumable" || item.type === "bulk"
+      ),
+    [inventoryQuery.data]
+  );
 
   const openInvoiceDetail = (
     invoice: InvoiceSummary,
@@ -312,42 +321,25 @@ const Invoices = () => {
     openInvoiceDetail(invoice);
   };
 
-  const handleDownloadInvoice = async (invoice: InvoiceSummary) => {
-    setDownloadingInvoiceId(invoice.id);
-    try {
-      const response = await fetch(`${API_BASE_URL}/invoices/${invoice.id}/pdf`, {
-        method: "GET",
-      });
-      if (!response.ok) {
-        throw new Error(`Unable to download invoice (status ${response.status})`);
-      }
+  const handleDownloadInvoice = (invoice: InvoiceSummary) => {
+    // Direct browser navigation/download — avoids fetch+blob object-URL revoke
+    // races that surface as false "NetworkError" toasts in Firefox.
+    const filename = `invoice-${invoice.invoice_no || invoice.id}.pdf`;
+    const anchor = document.createElement("a");
+    anchor.href = `${API_BASE_URL}/invoices/${invoice.id}/pdf`;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  };
 
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const safeInvoiceNo = (invoice.invoice_no ?? `invoice-${invoice.id}`)
-        .toString()
-        .replace(/[^a-zA-Z0-9-_]/g, "_");
-      anchor.download = `${safeInvoiceNo}.pdf`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
-
-    toast({
-        title: "Download started",
-        description: `Invoice ${invoice.invoice_no ?? `#${invoice.id}`} is being downloaded.`,
-      });
-    } catch (error) {
-      toast({
-        title: "Download failed",
-        description: error instanceof Error ? error.message : "Unable to download invoice PDF.",
-        variant: "destructive",
-      });
-    } finally {
-      setDownloadingInvoiceId(null);
-    }
+  const openDeleteInvoice = (invoice: { id: number; invoice_no?: string | null; label?: string }) => {
+    setInvoiceToDelete({
+      id: invoice.id,
+      label: invoice.label ?? invoice.invoice_no ?? `INV-${invoice.id}`,
+    });
+    setDeleteOpen(true);
   };
 
   const openEditModal = () => {
@@ -464,18 +456,34 @@ const Invoices = () => {
         method: "DELETE",
       }),
     onSuccess: (_data, variables) => {
-    toast({
+      toast({
         title: "Invoice deleted",
         description: `${variables.label} has been deleted successfully.`,
-    });
+      });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
-    setDeleteOpen(false);
-    setDetailOpen(false);
-      setSelectedInvoiceDetail(null);
-      setSelectedInvoiceLabel("");
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["recentJobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboardStats"] });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      setDeleteOpen(false);
+      setInvoiceToDelete(null);
+      if (selectedInvoiceDetail?.id === variables.id) {
+        setDetailOpen(false);
+        setSelectedInvoiceDetail(null);
+        setSelectedInvoiceLabel("");
+      }
+      if (previewDetail?.id === variables.id) {
+        setPreviewOpen(false);
+        setPreviewDetail(null);
+        setPreviewLabel("");
+      }
+      if (editOpen && selectedInvoiceDetail?.id === variables.id) {
+        setEditOpen(false);
+      }
     },
     onError: (error) => {
-    toast({
+      toast({
         title: "Unable to delete invoice",
         description: error.message,
         variant: "destructive",
@@ -643,8 +651,8 @@ const Invoices = () => {
   };
 
   const handleDelete = () => {
-    if (!selectedInvoiceDetail) return;
-    deleteInvoiceMutation.mutate({ id: selectedInvoiceDetail.id, label: selectedInvoiceLabel });
+    if (!invoiceToDelete || deleteInvoiceMutation.isPending) return;
+    deleteInvoiceMutation.mutate(invoiceToDelete);
   };
 
   const detailCharges = selectedInvoiceDetail?.charges ?? [];
@@ -725,7 +733,10 @@ const Invoices = () => {
     deducted: boolean;
     rate: number;
   }) => {
-    const unitsLabel = quantity === 1 ? "unit" : "units";
+    const unitLabel = item.unit?.trim();
+    const qtyLabel = unitLabel
+      ? `${quantity} ${unitLabel}`
+      : `${quantity} ${quantity === 1 ? "unit" : "units"}`;
 
     setEditItems((prev) => [
       ...prev,
@@ -741,8 +752,12 @@ const Invoices = () => {
     toast({
       title: "Inventory item added",
       description: deducted
-        ? `${item.name} added and ${quantity} ${unitsLabel} deducted from inventory.`
-        : `${item.name} added as a line item${item.type === "consumable" ? ", inventory left unchanged." : "."}`,
+        ? `${item.name} added and ${qtyLabel} deducted from inventory.`
+        : `${item.name} added as a line item${
+            item.type === "consumable" || item.type === "bulk"
+              ? ", inventory left unchanged."
+              : "."
+          }`,
     });
 
     resetAddChargeForm();
@@ -812,7 +827,23 @@ const Invoices = () => {
     const lineTotal = quantityValue * rateValue;
     const label = `${inventoryItem.name}${quantityValue > 1 ? ` (${quantityValue}×)` : ""}`;
 
-    if (inventoryItem.type === "consumable") {
+    // Stock-managed types: block when requested qty exceeds InventoryItems.quantity (any unit).
+    const isStockManaged =
+      inventoryItem.type === "consumable" || inventoryItem.type === "bulk";
+    if (isStockManaged && quantityValue > Number(inventoryItem.quantity)) {
+      const unitLabel = inventoryItem.unit?.trim();
+      const availableLabel = unitLabel
+        ? `${inventoryItem.quantity} ${unitLabel}`
+        : String(inventoryItem.quantity);
+      toast({
+        title: "Insufficient stock",
+        description: `Only ${availableLabel} available.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (isStockManaged) {
       setPendingInventoryCharge({
         item: inventoryItem,
         quantity: quantityValue,
@@ -1108,11 +1139,27 @@ const Invoices = () => {
                           variant="ghost"
                           size="icon"
                           title="Download"
-                          disabled={downloadingInvoiceId === invoice.id}
                           onClick={() => handleDownloadInvoice(invoice)}
                         >
                           <Download className="h-4 w-4" />
                         </Button>
+                        {invoice.payment_status?.toLowerCase() === "paid" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Delete"
+                          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() =>
+                            openDeleteInvoice({
+                              id: invoice.id,
+                              invoice_no: invoice.invoice_no,
+                              label: displayId,
+                            })
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1414,9 +1461,22 @@ const Invoices = () => {
                   <Edit className="mr-2 h-4 w-4" />
                   Edit
                 </Button>
-                <Button variant="destructive" className="md:flex-1" onClick={() => setDeleteOpen(true)}>
+                {selectedInvoiceDetail.payment_status?.toLowerCase() === "paid" && (
+                <Button
+                  variant="destructive"
+                  className="md:flex-1"
+                  onClick={() =>
+                    openDeleteInvoice({
+                      id: selectedInvoiceDetail.id,
+                      invoice_no: selectedInvoiceDetail.invoice_no,
+                      label: selectedInvoiceLabel || selectedInvoiceDetail.invoice_no || `INV-${selectedInvoiceDetail.id}`,
+                    })
+                  }
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
                   Delete
                 </Button>
+                )}
               </div>
             </div>
           )}
@@ -1706,22 +1766,34 @@ const Invoices = () => {
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <Dialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          if (deleteInvoiceMutation.isPending) return;
+          setDeleteOpen(open);
+          if (!open) {
+            setInvoiceToDelete(null);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete invoice</DialogTitle>
+            <DialogTitle>Delete Invoice?</DialogTitle>
             <DialogDescription>
-              This will remove {selectedInvoiceLabel || "this invoice"} permanently. Any consumable items linked to
-              the invoice will be returned to inventory automatically.
+              Are you sure you want to delete {invoiceToDelete?.label || "this invoice"}?
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Are you sure you want to continue?
+            This action will remove the invoice. Any consumable inventory deducted by this invoice will be restored.
           </p>
           <div className="flex justify-end gap-3 pt-4">
             <Button
               variant="outline"
-              onClick={() => setDeleteOpen(false)}
+              onClick={() => {
+                if (deleteInvoiceMutation.isPending) return;
+                setDeleteOpen(false);
+                setInvoiceToDelete(null);
+              }}
               disabled={deleteInvoiceMutation.isPending}
             >
               Cancel
@@ -1729,9 +1801,9 @@ const Invoices = () => {
             <Button
               variant="destructive"
               onClick={handleDelete}
-              disabled={deleteInvoiceMutation.isPending}
+              disabled={deleteInvoiceMutation.isPending || !invoiceToDelete}
             >
-              {deleteInvoiceMutation.isPending ? "Deleting..." : "Delete"}
+              {deleteInvoiceMutation.isPending ? "Deleting..." : "Delete Invoice"}
             </Button>
           </div>
         </DialogContent>
@@ -2184,7 +2256,7 @@ const Invoices = () => {
                         <CommandList>
                           <CommandEmpty>No items found.</CommandEmpty>
                           <CommandGroup>
-                            {(inventoryQuery.data ?? []).map((item) => (
+                            {invoiceSelectableInventory.map((item) => (
                               <CommandItem
                                 key={item.id}
                                 value={`${item.name} ${item.type}`}
@@ -2268,7 +2340,7 @@ const Invoices = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Deduct inventory?</AlertDialogTitle>
             <AlertDialogDescription>
-              Decide whether to decrease stock for this consumable now or keep inventory unchanged.
+              Decide whether to decrease stock for this item now or keep inventory unchanged.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {pendingInventoryCharge && (
@@ -2286,7 +2358,11 @@ const Invoices = () => {
                 </div>
                 <div className="rounded-md bg-background p-2">
                   <p className="text-xs text-muted-foreground">Current stock</p>
-                  <p className="font-semibold">{pendingInventoryCharge.item.quantity}</p>
+                  <p className="font-semibold">
+                    {pendingInventoryCharge.item.unit?.trim()
+                      ? `${pendingInventoryCharge.item.quantity} ${pendingInventoryCharge.item.unit}`
+                      : pendingInventoryCharge.item.quantity}
+                  </p>
                 </div>
                 </div>
               <div className="rounded-md bg-background p-2">

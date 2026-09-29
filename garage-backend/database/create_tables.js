@@ -106,6 +106,7 @@ db.serialize(() => {
             unit TEXT,
             quantity REAL DEFAULT 0,
             unit_cost REAL,
+            selling_price REAL,
             reorder_level REAL DEFAULT 0,
             genuine_or_non_genuine TEXT CHECK(genuine_or_non_genuine IN ('genuine', 'non-genuine')),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -263,6 +264,18 @@ db.serialize(() => {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `, log("Notifications"));
+
+    // ================================
+    //  QUICK SERVICE CUSTOM SERVICES
+    // ================================
+    db.run(`
+        CREATE TABLE IF NOT EXISTS QuickServiceCustomServices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    `, log("QuickServiceCustomServices"));
 
 });
 
