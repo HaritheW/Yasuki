@@ -2,9 +2,38 @@ const express = require("express");
 const router = express.Router();
 const db = require("../../database/db");
 const { createNotification, notifyLowStockIfNeeded } = require("../utils/notifications");
+const { assertSufficientStock, isStockDeductedType, assertInvoiceSelectableInventoryItem } = require("../utils/inventoryStock");
 
 const VALID_JOB_STATUSES = ["Pending", "In Progress", "Completed", "Cancelled"];
 const VALID_ITEM_TYPES = ["consumable", "non-consumable", "bulk"];
+const VALID_PAYMENT_STATUSES = ["unpaid", "partial", "paid"];
+
+const QUICK_SERVICE_DEFAULT_NAMES = [
+    "Vehicle Wash",
+    "Full Wash / Detailing",
+    "Oil Change",
+    "Filter Change",
+    "General Checkup",
+    "Inspection",
+    "Battery Check",
+    "Brake Check",
+    "Tyre Check",
+    "Wheel Alignment",
+    "Wheel Balancing",
+    "Diagnostic Scan",
+    "Minor Electrical Repair",
+    "Minor Mechanical Repair",
+    "Other",
+];
+const QUICK_SERVICE_DEFAULT_NAME_KEYS = new Set(
+    QUICK_SERVICE_DEFAULT_NAMES.map((name) => name.toLowerCase())
+);
+const QUICK_SERVICE_CUSTOM_NAME_MAX_LENGTH = 100;
+
+const normalizeQuickServiceCustomName = (value) =>
+    String(value ?? "")
+        .trim()
+        .replace(/\s+/g, " ");
 
 const runAsync = (sql, params = []) =>
     new Promise((resolve, reject) => {
@@ -63,9 +92,15 @@ const computeInvoiceTotals = (charges = [], reductions = []) => {
         return sum + quantity * unitPrice;
     }, 0);
 
-    const totalCharges = reductions
+    // Match invoiceRoutes calculateTotals: charge + extra both increase the invoice,
+    // and deduction decreases the final total.
+    const totalLabour = reductions
         .filter((extra) => extra.type === "charge")
         .reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0);
+    const totalExtras = reductions
+        .filter((extra) => extra.type === "extra")
+        .reduce((sum, extra) => sum + Number(extra.amount ?? 0), 0);
+    const totalCharges = totalLabour + totalExtras;
 
     const totalDeductions = reductions
         .filter((extra) => extra.type === "deduction")
@@ -81,24 +116,30 @@ const computeInvoiceTotals = (charges = [], reductions = []) => {
     };
 };
 
-const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = "unpaid", notes = null }) => {
+const createInvoiceForJob = async ({
+    jobId,
+    charges = [],
+    extras = [],
+    status = "unpaid",
+    notes = null,
+    paymentMethod = null,
+}) => {
     const invoiceNo = await generateInvoiceNumber();
     const totals = computeInvoiceTotals(charges, extras);
+    const normalizedPaymentMethod =
+        typeof paymentMethod === "string" && paymentMethod.trim() ? paymentMethod.trim() : null;
 
-    // Validate and plan inventory deductions for consumables (avoid negative stock).
-    const consumableUsage = new Map();
+    // Validate and plan inventory deductions for stock-managed types (by TYPE only; unit is display-only).
+    const stockUsage = new Map();
+    const inventoryById = new Map();
     for (const charge of charges) {
         const inventoryId = charge?.inventory_item_id ?? null;
-        const type = (charge?.type ?? "consumable").toLowerCase();
         const qty = Number(charge?.quantity ?? 1) || 0;
-        if (!inventoryId || type !== "consumable" || qty <= 0) continue;
-        consumableUsage.set(inventoryId, (consumableUsage.get(inventoryId) || 0) + qty);
-    }
+        if (!inventoryId || qty <= 0) continue;
 
-    if (consumableUsage.size) {
-        for (const [inventoryId, plannedQty] of consumableUsage.entries()) {
+        if (!inventoryById.has(inventoryId)) {
             const item = await getAsync(
-                `SELECT id, name, quantity FROM InventoryItems WHERE id = ?`,
+                `SELECT id, name, type, unit, quantity FROM InventoryItems WHERE id = ?`,
                 [inventoryId]
             );
             if (!item) {
@@ -106,24 +147,26 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
                 notFoundError.status = 404;
                 throw notFoundError;
             }
-            const available = Number(item.quantity ?? 0);
-            if (plannedQty > available) {
-                const err = new Error(
-                    `Insufficient stock for ${item.name || `item #${inventoryId}`}. Available ${available}, needed ${plannedQty}.`
-                );
-                err.status = 400;
-                throw err;
-            }
+            inventoryById.set(inventoryId, item);
         }
+
+        const inventoryItem = inventoryById.get(inventoryId);
+        // Deduction/validation follows InventoryItems.type — never the unit label.
+        if (!isStockDeductedType(inventoryItem.type)) continue;
+        stockUsage.set(inventoryId, (stockUsage.get(inventoryId) || 0) + qty);
+    }
+
+    for (const [inventoryId, plannedQty] of stockUsage.entries()) {
+        assertSufficientStock(inventoryById.get(inventoryId), plannedQty);
     }
 
     const insertInvoiceResult = await runAsync(
         `
         INSERT INTO Invoices (
             job_id, invoice_no, invoice_date, items_total,
-            total_charges, total_deductions, final_total, payment_status, notes
+            total_charges, total_deductions, final_total, payment_method, payment_status, notes
         )
-        VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
     `,
         [
             jobId,
@@ -132,6 +175,7 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
             totals.totalCharges,
             totals.totalDeductions,
             totals.finalTotal,
+            normalizedPaymentMethod,
             status,
             notes,
         ]
@@ -141,6 +185,10 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
     const consumableMovements = [];
 
     for (const charge of charges) {
+        const inventoryId = charge?.inventory_item_id ?? null;
+        const inventoryItem = inventoryId ? inventoryById.get(inventoryId) : null;
+        const resolvedType = inventoryItem?.type ?? charge.type ?? "consumable";
+
         await runAsync(
             `
             INSERT INTO InvoiceItems (invoice_id, inventory_item_id, item_name, quantity, unit_price, line_total, type)
@@ -148,19 +196,17 @@ const createInvoiceForJob = async ({ jobId, charges = [], extras = [], status = 
         `,
             [
                 invoiceId,
-                charge.inventory_item_id ?? null,
+                inventoryId,
                 charge.item_name,
                 charge.quantity ?? 1,
                 charge.unit_price ?? 0,
                 (charge.quantity ?? 1) * (charge.unit_price ?? 0),
-                charge.type ?? "consumable",
+                resolvedType,
             ]
         );
 
-        const inventoryId = charge?.inventory_item_id ?? null;
-        const type = (charge?.type ?? "consumable").toLowerCase();
         const qty = Number(charge?.quantity ?? 1) || 0;
-        if (inventoryId && type === "consumable" && qty > 0) {
+        if (inventoryId && isStockDeductedType(resolvedType) && qty > 0) {
             await runAsync(
                 `
                 UPDATE InventoryItems
@@ -387,6 +433,8 @@ const prepareJobItems = async (jobId, items = []) => {
                 throw notFoundError;
             }
 
+            assertInvoiceSelectableInventoryItem(inventoryItem);
+
             resolvedName = resolvedName || inventoryItem.name;
             resolvedType = resolvedType || inventoryItem.type;
         } else {
@@ -492,6 +540,388 @@ const prepareInvoicePayloadFromJob = async (jobId, jobMeta = {}) => {
         extras,
     };
 };
+
+const parseRequiredId = (value, fieldName) => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        const validationError = new Error(`${fieldName} must be a valid id`);
+        validationError.status = 400;
+        throw validationError;
+    }
+    return parsed;
+};
+
+const parseNonNegativeAmount = (value, fieldName) => {
+    if (value === undefined || value === null || value === "") {
+        const validationError = new Error(`${fieldName} is required`);
+        validationError.status = 400;
+        throw validationError;
+    }
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) {
+        const validationError = new Error(`${fieldName} must be a valid number`);
+        validationError.status = 400;
+        throw validationError;
+    }
+    if (amount < 0) {
+        const validationError = new Error(`${fieldName} must not be negative`);
+        validationError.status = 400;
+        throw validationError;
+    }
+    return Number(amount.toFixed(2));
+};
+
+const normalizeQuickServiceEntries = (body = {}) => {
+    const { services, service, service_charge } = body;
+
+    if (Array.isArray(services)) {
+        if (services.length === 0) {
+            const validationError = new Error("services must contain at least one entry");
+            validationError.status = 400;
+            throw validationError;
+        }
+
+        const normalized = [];
+        const seen = new Set();
+
+        for (let index = 0; index < services.length; index += 1) {
+            const entry = services[index] ?? {};
+            const name = typeof entry.name === "string" ? entry.name.trim() : "";
+            if (!name) {
+                const validationError = new Error(`services[${index}].name is required`);
+                validationError.status = 400;
+                throw validationError;
+            }
+            const key = name.toLowerCase();
+            if (seen.has(key)) {
+                const validationError = new Error(`Duplicate service name: ${name}`);
+                validationError.status = 400;
+                throw validationError;
+            }
+            seen.add(key);
+            normalized.push({
+                name,
+                charge: parseNonNegativeAmount(entry.charge, `services[${index}].charge`),
+            });
+        }
+
+        return normalized;
+    }
+
+    const serviceName = typeof service === "string" ? service.trim() : "";
+    if (!serviceName) {
+        const validationError = new Error("services or service is required");
+        validationError.status = 400;
+        throw validationError;
+    }
+
+    return [
+        {
+            name: serviceName,
+            charge: parseNonNegativeAmount(service_charge, "service_charge"),
+        },
+    ];
+};
+
+// Custom Quick Service dropdown names (master list only; not invoice rows)
+router.get("/quick-service/services", async (_req, res) => {
+    try {
+        const rows = await allAsync(
+            `
+            SELECT id, name
+            FROM QuickServiceCustomServices
+            WHERE is_active = 1
+            ORDER BY name COLLATE NOCASE ASC
+        `
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error("GET /jobs/quick-service/services failed:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.post("/quick-service/services", async (req, res) => {
+    try {
+        const name = normalizeQuickServiceCustomName(req.body?.name);
+        if (!name) {
+            return res.status(400).json({ error: "name is required" });
+        }
+        if (name.length > QUICK_SERVICE_CUSTOM_NAME_MAX_LENGTH) {
+            return res.status(400).json({
+                error: `name must be ${QUICK_SERVICE_CUSTOM_NAME_MAX_LENGTH} characters or fewer`,
+            });
+        }
+
+        const key = name.toLowerCase();
+        if (key === "other" || QUICK_SERVICE_DEFAULT_NAME_KEYS.has(key)) {
+            return res.status(400).json({
+                error: "Built-in Quick Service names cannot be saved as custom services",
+            });
+        }
+
+        const existing = await getAsync(
+            `
+            SELECT id, name, is_active
+            FROM QuickServiceCustomServices
+            WHERE name = ? COLLATE NOCASE
+            LIMIT 1
+        `,
+            [name]
+        );
+        if (existing) {
+            if (Number(existing.is_active) === 0) {
+                await runAsync(
+                    `UPDATE QuickServiceCustomServices SET is_active = 1 WHERE id = ?`,
+                    [existing.id]
+                );
+            }
+            return res.status(200).json({ id: existing.id, name: existing.name });
+        }
+
+        const inserted = await runAsync(
+            `
+            INSERT INTO QuickServiceCustomServices (name, is_active)
+            VALUES (?, 1)
+        `,
+            [name]
+        );
+        return res.status(201).json({ id: inserted.lastID, name });
+    } catch (error) {
+        if (String(error.message || "").toLowerCase().includes("unique")) {
+            try {
+                const existing = await getAsync(
+                    `
+                    SELECT id, name
+                    FROM QuickServiceCustomServices
+                    WHERE name = ? COLLATE NOCASE
+                    LIMIT 1
+                `,
+                    [normalizeQuickServiceCustomName(req.body?.name)]
+                );
+                if (existing) {
+                    return res.status(200).json({ id: existing.id, name: existing.name });
+                }
+            } catch {
+                // fall through
+            }
+        }
+        console.error("POST /jobs/quick-service/services failed:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Quick service: completed job + one invoice in a single transaction
+router.post("/quick-service", async (req, res) => {
+    const {
+        customer_id,
+        vehicle_id,
+        description,
+        notes,
+        items = [],
+        payment_status,
+        payment_method,
+    } = req.body ?? {};
+
+    let transactionStarted = false;
+
+    try {
+        const customerId = parseRequiredId(customer_id, "customer_id");
+        const vehicleId = parseRequiredId(vehicle_id, "vehicle_id");
+        const serviceEntries = normalizeQuickServiceEntries(req.body ?? {});
+        const serviceNameJoined = serviceEntries.map((entry) => entry.name).join(", ");
+        const serviceChargeTotal = Number(
+            serviceEntries.reduce((sum, entry) => sum + entry.charge, 0).toFixed(2)
+        );
+
+        if (!Array.isArray(items)) {
+            const validationError = new Error("items must be an array");
+            validationError.status = 400;
+            throw validationError;
+        }
+
+        if (!VALID_PAYMENT_STATUSES.includes(payment_status)) {
+            const validationError = new Error("payment_status must be unpaid, partial, or paid");
+            validationError.status = 400;
+            throw validationError;
+        }
+
+        const paymentMethod =
+            typeof payment_method === "string" && payment_method.trim() ? payment_method.trim() : null;
+        if ((payment_status === "paid" || payment_status === "partial") && !paymentMethod) {
+            const validationError = new Error(
+                "payment_method is required when payment_status is paid or partial"
+            );
+            validationError.status = 400;
+            throw validationError;
+        }
+
+        const jobDescription =
+            typeof description === "string" && description.trim()
+                ? description.trim()
+                : serviceNameJoined;
+        const jobNotes = typeof notes === "string" && notes.trim() ? notes.trim() : null;
+        const preparedRequestItems = items.map((item, index) => {
+            const quantity = Number(item?.quantity);
+            if (!Number.isFinite(quantity) || quantity <= 0) {
+                const validationError = new Error(`items[${index}].quantity must be greater than 0`);
+                validationError.status = 400;
+                throw validationError;
+            }
+            const unitPrice = Number(item?.unit_price);
+            if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+                const validationError = new Error(`items[${index}].unit_price must be a number greater than or equal to 0`);
+                validationError.status = 400;
+                throw validationError;
+            }
+            const normalizedPrice = Number(unitPrice.toFixed(2));
+            const rawInventoryId = item?.inventory_item_id;
+            const hasInventoryId =
+                rawInventoryId !== undefined && rawInventoryId !== null && String(rawInventoryId).trim() !== "";
+            if (hasInventoryId) {
+                return {
+                    inventory_item_id: parseRequiredId(rawInventoryId, `items[${index}].inventory_item_id`),
+                    quantity,
+                    unit_price: normalizedPrice,
+                };
+            }
+            const itemName = typeof item?.item_name === "string" ? item.item_name.trim() : "";
+            if (!itemName) {
+                const validationError = new Error(
+                    `items[${index}] requires an item_name or inventory_item_id`
+                );
+                validationError.status = 400;
+                throw validationError;
+            }
+            return {
+                item_name: itemName,
+                quantity,
+                unit_price: normalizedPrice,
+            };
+        });
+
+        await runAsync("BEGIN TRANSACTION");
+        transactionStarted = true;
+
+        const customer = await getAsync("SELECT id FROM Customers WHERE id = ?", [customerId]);
+        if (!customer) {
+            const notFoundError = new Error("Customer not found");
+            notFoundError.status = 404;
+            throw notFoundError;
+        }
+
+        const vehicle = await getAsync(
+            "SELECT id, customer_id, archived FROM Vehicles WHERE id = ?",
+            [vehicleId]
+        );
+        if (!vehicle) {
+            const notFoundError = new Error("Vehicle not found");
+            notFoundError.status = 404;
+            throw notFoundError;
+        }
+        if (Number(vehicle.archived ?? 0) !== 0) {
+            const archivedError = new Error("Vehicle is archived");
+            archivedError.status = 400;
+            throw archivedError;
+        }
+        if (Number(vehicle.customer_id) !== customerId) {
+            const mismatchError = new Error("Vehicle does not belong to this customer");
+            mismatchError.status = 400;
+            throw mismatchError;
+        }
+
+        const jobResult = await runAsync(
+            `
+            INSERT INTO Jobs (
+                customer_id,
+                vehicle_id,
+                description,
+                notes,
+                category,
+                initial_amount,
+                job_status,
+                invoice_created
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'Completed', 0)
+        `,
+            [
+                customerId,
+                vehicle.id,
+                jobDescription,
+                jobNotes,
+                serviceNameJoined.slice(0, 100),
+                serviceChargeTotal,
+            ]
+        );
+        const jobId = jobResult.lastID;
+
+        // Inventory-linked lines stay JobItems / InvoiceItems (stock deduction applies).
+        // One-time/manual parts become InvoiceExtraItems type "extra" (same as invoice Manual entry).
+        const inventoryRequestItems = preparedRequestItems.filter((item) => item.inventory_item_id);
+        const manualRequestItems = preparedRequestItems.filter((item) => !item.inventory_item_id);
+
+        const jobItems = await prepareJobItems(jobId, inventoryRequestItems);
+        const invoiceCharges = jobItems.map((item) => ({
+            inventory_item_id: item.inventory_item_id,
+            item_name: item.item_name,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            type: item.item_type,
+        }));
+        const invoiceExtras = [
+            ...manualRequestItems.map((item) => ({
+                label: item.item_name,
+                amount: Number((item.quantity * item.unit_price).toFixed(2)),
+                type: "extra",
+            })),
+            ...serviceEntries
+                .filter((entry) => entry.charge > 0)
+                .map((entry) => ({
+                    label: entry.name,
+                    amount: entry.charge,
+                    type: "charge",
+                })),
+        ];
+
+        const invoice = await createInvoiceForJob({
+            jobId,
+            charges: invoiceCharges,
+            extras: invoiceExtras,
+            status: payment_status,
+            notes: jobNotes,
+            paymentMethod,
+        });
+
+        await runAsync("UPDATE Jobs SET invoice_created = 1 WHERE id = ?", [jobId]);
+        const job = await fetchJobDetails(jobId);
+
+        await createNotification({
+            title: "Job created",
+            message: `Job #${jobId} created for customer #${customerId}.`,
+            type: "job",
+        });
+
+        await runAsync("COMMIT");
+
+        res.status(201).json({
+            job,
+            invoice,
+            invoice_id: invoice.id,
+            invoice_number: invoice.invoice_no,
+        });
+    } catch (error) {
+        if (transactionStarted) {
+            try {
+                await runAsync("ROLLBACK");
+            } catch (rollbackError) {
+                console.error("Rollback failed:", rollbackError.message);
+            }
+        }
+        console.error("Quick service error:", error.message);
+        const status = Number.isInteger(error.status) ? error.status : 500;
+        res.status(status).json({ error: error.message });
+    }
+});
 
 // Create job
 router.post("/", async (req, res) => {

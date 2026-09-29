@@ -37,6 +37,7 @@ type InventoryItem = {
   unit: string | null;
   quantity: number;
   unit_cost: number | null;
+  selling_price?: number | null;
   reorder_level: number | null;
   genuine_or_non_genuine?: GenuineOption | null;
   created_at?: string;
@@ -50,6 +51,7 @@ type InventoryPayload = Partial<{
   unit: string | null;
   quantity: number;
   unit_cost: number | null;
+  selling_price: number | null;
   reorder_level: number | null;
   genuine_or_non_genuine: GenuineOption | null;
 }>;
@@ -166,7 +168,7 @@ const Inventory = () => {
       setCreateType("");
       setCreateGenuine("");
       setCreateUnit(NO_UNIT_VALUE);
-    setCreateUnitCustom("");
+      setCreateUnitCustom("");
     }
   }, [addItemOpen]);
 
@@ -174,23 +176,23 @@ const Inventory = () => {
     if (selectedItem && editOpen) {
       setEditType(selectedItem.type);
       setEditGenuine(selectedItem.genuine_or_non_genuine ?? "");
-    if (selectedItem.unit) {
-      if ((UNIT_OPTIONS as readonly string[]).includes(selectedItem.unit)) {
-        setEditUnitSelect(selectedItem.unit);
-        setEditUnitCustom("");
+      if (selectedItem.unit) {
+        if ((UNIT_OPTIONS as readonly string[]).includes(selectedItem.unit)) {
+          setEditUnitSelect(selectedItem.unit);
+          setEditUnitCustom("");
+        } else {
+          setEditUnitSelect(OTHER_UNIT_VALUE);
+          setEditUnitCustom(selectedItem.unit);
+        }
       } else {
-        setEditUnitSelect(OTHER_UNIT_VALUE);
-        setEditUnitCustom(selectedItem.unit);
+        setEditUnitSelect(NO_UNIT_VALUE);
+        setEditUnitCustom("");
       }
-    } else {
+    } else if (!editOpen) {
       setEditUnitSelect(NO_UNIT_VALUE);
       setEditUnitCustom("");
+      setEditGenuine("");
     }
-  } else if (!editOpen) {
-    setEditUnitSelect(NO_UNIT_VALUE);
-    setEditUnitCustom("");
-    }
-    if (!editOpen) setEditGenuine("");
   }, [selectedItem, editOpen]);
 
   const getStatusLabel = (item: InventoryItem) => {
@@ -306,6 +308,7 @@ const Inventory = () => {
     const description = String(formData.get("description") || "").trim();
     const quantityValue = Number(formData.get("quantity") || 0);
     const unitCostValueRaw = String(formData.get("unit_cost") || "");
+    const sellingPriceValueRaw = String(formData.get("selling_price") || "");
     const reorderLevelValueRaw = String(formData.get("reorder_level") || "");
 
     if (!name) {
@@ -362,6 +365,17 @@ const Inventory = () => {
       return;
     }
 
+    const sellingPriceValue =
+      sellingPriceValueRaw === "" ? null : Number(sellingPriceValueRaw);
+    if (sellingPriceValue !== null && (!Number.isFinite(sellingPriceValue) || sellingPriceValue < 0)) {
+      toast({
+        title: "Invalid selling price",
+        description: "Selling price must be zero or greater.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const reorderLevelValue =
       reorderLevelValueRaw === "" ? null : Number(reorderLevelValueRaw);
     if (reorderLevelValue !== null && (!Number.isFinite(reorderLevelValue) || reorderLevelValue < 0)) {
@@ -381,6 +395,7 @@ const Inventory = () => {
         unit: unitValue ? unitValue : null,
         quantity: quantityValue,
         unit_cost: unitCostValue,
+        selling_price: sellingPriceValue,
         reorder_level: reorderLevelValue,
         genuine_or_non_genuine: createGenuine ? (createGenuine as GenuineOption) : null,
       },
@@ -406,6 +421,7 @@ const Inventory = () => {
     const description = String(formData.get("description") || "").trim();
     const quantityValueRaw = String(formData.get("quantity") || "");
     const unitCostValueRaw = String(formData.get("unit_cost") || "");
+    const sellingPriceValueRaw = String(formData.get("selling_price") || "");
     const reorderLevelValueRaw = String(formData.get("reorder_level") || "");
 
     if (!editType) {
@@ -464,6 +480,20 @@ const Inventory = () => {
         return;
       }
       payload.unit_cost = unitCostValue;
+    }
+
+    {
+      const sellingPriceValue =
+        sellingPriceValueRaw === "" ? null : Number(sellingPriceValueRaw);
+      if (sellingPriceValue !== null && (!Number.isFinite(sellingPriceValue) || sellingPriceValue < 0)) {
+        toast({
+          title: "Invalid selling price",
+          description: "Selling price must be zero or greater.",
+          variant: "destructive",
+        });
+        return;
+      }
+      payload.selling_price = sellingPriceValue;
     }
 
     if (reorderLevelValueRaw !== "") {
@@ -710,6 +740,18 @@ const Inventory = () => {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="selling_price">Selling Price (LKR)</Label>
+                  <Input
+                    id="selling_price"
+                    name="selling_price"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="Customer selling price"
+                  />
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="reorder_level">Minimum Quantity (Optional)</Label>
                   <Input
                     id="reorder_level"
@@ -799,6 +841,7 @@ const Inventory = () => {
                   <th className="p-3 text-left text-sm font-medium">Genuine / Non Genuine</th>
                   <th className="p-3 text-left text-sm font-medium">Quantity</th>
                   <th className="p-3 text-left text-sm font-medium">Unit Cost</th>
+                  <th className="p-3 text-left text-sm font-medium">Selling Price</th>
                   <th className="p-3 text-left text-sm font-medium">Status</th>
                   <th className="p-3 text-left text-sm font-medium max-w-[240px]">Notes</th>
                 </tr>
@@ -861,6 +904,7 @@ const Inventory = () => {
                       </span>
                     </td>
                         <td className="p-3 font-semibold">{formatCurrency(item.unit_cost)}</td>
+                        <td className="p-3 font-semibold">{formatCurrency(item.selling_price)}</td>
                     <td className="p-3">
                           <Badge className={statusBadgeStyles[statusLabel]}>
                             {statusLabel}
@@ -887,7 +931,8 @@ const Inventory = () => {
         open={detailOpen}
         onOpenChange={(open) => {
           setDetailOpen(open);
-          if (!open) setSelectedItem(null);
+          // Keep selectedItem when moving to edit/delete; those dialogs clear on close.
+          if (!open && !editOpen && !deleteOpen) setSelectedItem(null);
         }}
       >
         <DialogContent className="max-w-2xl">
@@ -937,6 +982,10 @@ const Inventory = () => {
                   <p className="font-semibold">{formatCurrency(selectedItem.unit_cost)}</p>
                 </div>
                 <div>
+                  <Label className="text-muted-foreground">Selling Price</Label>
+                  <p className="font-semibold">{formatCurrency(selectedItem.selling_price)}</p>
+                </div>
+                <div>
                   <Label className="text-muted-foreground">Status</Label>
                   <div className="mt-1">
                     <Badge className={statusBadgeStyles[getStatusLabel(selectedItem)]}>
@@ -959,8 +1008,24 @@ const Inventory = () => {
                   variant="outline" 
                   className="flex-1"
                   onClick={() => {
-                    setDetailOpen(false);
+                    if (selectedItem) {
+                      setEditType(selectedItem.type);
+                      setEditGenuine(selectedItem.genuine_or_non_genuine ?? "");
+                      if (selectedItem.unit) {
+                        if ((UNIT_OPTIONS as readonly string[]).includes(selectedItem.unit)) {
+                          setEditUnitSelect(selectedItem.unit);
+                          setEditUnitCustom("");
+                        } else {
+                          setEditUnitSelect(OTHER_UNIT_VALUE);
+                          setEditUnitCustom(selectedItem.unit);
+                        }
+                      } else {
+                        setEditUnitSelect(NO_UNIT_VALUE);
+                        setEditUnitCustom("");
+                      }
+                    }
                     setEditOpen(true);
+                    setDetailOpen(false);
                   }}
                 >
                   <Edit className="mr-2 h-4 w-4" />
@@ -1086,16 +1151,30 @@ const Inventory = () => {
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="editUnitCost">Unit Cost (LKR)</Label>
-                <Input
-                  id="editUnitCost"
-                  name="unit_cost"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  defaultValue={selectedItem.unit_cost ?? ""}
-                />
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="editUnitCost">Unit Cost (LKR)</Label>
+                  <Input
+                    id="editUnitCost"
+                    name="unit_cost"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    defaultValue={selectedItem.unit_cost ?? ""}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="editSellingPrice">Selling Price (LKR)</Label>
+                  <Input
+                    id="editSellingPrice"
+                    name="selling_price"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    defaultValue={selectedItem.selling_price ?? ""}
+                    placeholder="Customer selling price"
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="editDescription">Notes</Label>

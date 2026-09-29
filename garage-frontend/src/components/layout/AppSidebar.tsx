@@ -1,5 +1,6 @@
 import { 
   LayoutDashboard, 
+  Zap,
   Wrench, 
   FileText, 
   Users, 
@@ -25,6 +26,7 @@ import {
 
 const menuItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
+  { title: "Quick Service", url: "/quick-service", icon: Zap },
   { title: "Manage Jobs", url: "/jobs", icon: Wrench },
   { title: "Manage Invoices", url: "/invoices", icon: FileText },
   { title: "Technicians", url: "/technicians", icon: Users },
@@ -48,21 +50,32 @@ export function AppSidebar() {
           <SidebarGroupLabel>Menu</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
-                    <NavLink 
-                      to={item.url} 
-                      end={item.url === "/"}
-                      className="flex items-center gap-3 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
-                      activeClassName="bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                    >
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              {menuItems.map((item) => {
+                const isQuickService = item.url === "/quick-service";
+                return (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton asChild>
+                      <NavLink
+                        to={item.url}
+                        end={item.url === "/"}
+                        className={
+                          isQuickService
+                            ? "flex items-center gap-3 rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                            : "flex items-center gap-3 text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                        }
+                        activeClassName={
+                          isQuickService
+                            ? "!bg-sky-500/20 font-medium !text-sky-100 hover:!bg-sky-500/25 hover:!text-sky-50 [&_svg]:!text-sky-200"
+                            : "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                        }
+                      >
+                        <item.icon className={isQuickService ? "h-4 w-4 text-sky-300/80" : "h-4 w-4"} />
+                        <span>{item.title}</span>
+                      </NavLink>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
